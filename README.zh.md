@@ -1,0 +1,248 @@
+<div align="center">
+
+[한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **中文**
+
+# Agent Office
+
+**用 3D 办公室里的角色，展示 Claude Code 会话和子智能体此刻在做什么的本地仪表盘**
+
+主 Claude 在自己的办公桌前打字，你委派的子智能体在旁边的工位上工作，需要你回复时，它会在座位上冒出对话气泡。
+
+![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)
+![three.js](https://img.shields.io/badge/three.js-r186-000000?logo=threedotjs&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-7-646cff?logo=vite&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
+![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
+
+<img src="docs/screenshot.png" alt="Agent Office 界面：四个会话各自在自己的区域工作，三个子智能体在主 Claude 旁边工作" width="900">
+
+</div>
+
+---
+
+## 为什么做这个
+
+在 Claude Code 中同时运行多个子智能体时，只看终端很难一眼看出谁在做什么、哪个会话在等你回复。Agent Office 读取 `~/.claude/projects` 中的会话记录，**每个会话对应办公室里的一个区域**，**每个智能体对应一个角色**。无需在 Claude Code 中安装或配置任何东西，开着它就行。
+
+## 主要功能
+
+- **按会话划分区域** — 最多同时用 4 个区域展示正在运行的会话。区域不够时优先显示正在工作的会话。
+- **能看出状态的角色** — 工作时坐着打字，读取文件时换成阅读姿势，等你回复时气泡会跳动，空闲的子智能体会在办公室里走动。
+- **气泡中的工具标签** — 显示正在使用的工具（`Bash`、`Read`、`Edit` …）以及委派给智能体的任务说明。MCP 工具会缩写成易读的形式，例如 `playwright · take screenshot`。
+- **子智能体追踪** — 连后台智能体也会追踪，并在主 Claude 的气泡中写明正在等谁（`正在等待 code-reviewer ×2`）。
+- **详情卡片** — 点击角色或名牌，可查看状态、工具、最近活动和委派的智能体。
+- **无响应检测** — 长时间收不到工具结果的子智能体会显示红色的 `无响应` 标签。
+- **用量仪表** — 办公室墙上的电视显示当前会话（5 小时）和每周用量，以及距重置的剩余时间。
+- **屏幕共享开关** — 可以隐藏项目名称。
+- **支持 4 种语言** — 한국어 · English · 日本語 · 中文。默认跟随浏览器语言，也可以在 HUD 中切换。
+- **绝不发送正文** — 发送到浏览器的只有状态和工具名称。对话内容和工具的输入输出不会离开服务器。
+
+## 快速开始
+
+### 环境要求
+
+- [Node.js](https://nodejs.org) 22.12 或更高版本（22 LTS 或 24 及以上）
+- 正在使用 [Claude Code](https://docs.claude.com/en/docs/claude-code) 的电脑（从同一台电脑读取会话记录）
+
+### 安装与运行
+
+```bash
+git clone <this-repo-url> agent-office
+cd agent-office
+npm install
+npm run dev
+```
+
+在浏览器中打开 <http://localhost:5180>，然后像平常一样使用 Claude Code，角色就会走进办公室。
+
+> [!NOTE]
+> 会话数据由开发服务器上的 Vite 插件提供。仅部署 `npm run build` 的产物（静态文件）无法运行。
+
+### 常见问题
+
+- **`vite: command not found`** — 尚未安装依赖。请在项目文件夹中运行 `npm ci`。
+- **`Cannot find module @rollup/rollup-…`** 或 esbuild 平台错误 — 从另一台电脑（例如 Apple Silicon Mac ↔ Intel Mac）整个复制了 `node_modules` 时会出现。请用 `rm -rf node_modules && npm ci` 重新安装。迁移项目时，复制时不要包含 `node_modules` 和 `dist`。
+
+`npm run dev` 启动前会检查这两种情况（`scripts/check-deps.mjs`），并提示应该怎么做。
+
+## 怎么看界面
+
+| 角色的样子 | 含义 |
+|------|------|
+| 坐在工位上打字，右侧显示器的终端在滚动 | 正在运行工具或组织回答（`Bash` 时终端滚动得更快） |
+| 坐在工位上呈阅读姿势，终端缓慢滚动 | 正在运行 `Read`、`Grep`、`Glob` 等读取类工具 |
+| `•••` 气泡和名牌一起跳动 | 正在等你回复（`AskUserQuestion`，或已经回答完、轮到你了） |
+| 离开工位在办公室里走动，或坐到茶桌旁休息 | 子智能体超过 2 分钟没有任何记录（打盹） |
+| 坐在休息区的沙发或椅子上，或在喝咖啡 | 仅在 `MAIN_STAYS_SEATED = false` 时：主会话等你回复超过 1 分钟 |
+| 红色 `无响应` 标签 | 子智能体超过 12 分钟没有收到工具结果 |
+| 走出门 | 会话或智能体已结束 |
+
+- **名牌上的圆点、脚下的圆环和地板颜色**是会话（区域）的颜色，**衣服颜色**是智能体类型的颜色。
+- 大窗户外的景色会跟随电脑时钟，按黎明 → 早晨 → 白天 → 黄昏 → 夜晚变化。太阳和月亮会横穿窗户，夜里楼房的窗户会亮灯。傍晚起办公室灯光会稍微变暗，落地灯和台灯会亮起，在周围洒下温暖的光。在网址后加上 `?hour=18.5` 这样的时间，就能看到对应时刻的景色。
+- 每张办公桌都有双显示器。有人坐下时，左边显示设计工具，右边显示终端；空工位显示蓝屏。
+- 用**鼠标滚轮**缩放，右上角的按钮切换全屏。
+- **点击角色或名牌**打开详情卡片。点击空白处或按 `Esc` 关闭。
+- 右上角的**语言选择**可以切换界面语言。默认跟随浏览器语言（不支持的语言则显示英语），所选语言会保存在浏览器中。
+- 关闭右上角的 **`项目名称` 开关**，区域标签和卡片中将隐藏项目名称。该设置同样会被保存。
+- 浏览器标签页被隐藏时会暂停连接和渲染，重新显示后继续。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+  CC["Claude Code<br/>(主会话 · 子智能体)"] -- 会话记录 jsonl --> FS[("~/.claude/projects")]
+  FS -- "每秒只读取有变化的文件<br/>的末尾部分" --> P["Vite 插件<br/>server/plugin.ts"]
+  P -- 状态判定 --> A["server/analyze.ts"]
+  P -- "SSE · 仅状态和工具名称" --> UI["浏览器<br/>Vue + three.js"]
+```
+
+1. Claude Code 会为每个会话写入 `~/.claude/projects/<项目>/<会话ID>.jsonl`，为每个子智能体写入 `<会话ID>/subagents/agent-<ID>.jsonl` 和 `agent-<ID>.meta.json`（类型和说明）。
+2. 开发服务器上的插件只挑选最近 30 分钟内有修改的会话（以及当前打开着的会话），读取文件末尾，根据是否有等待结果的工具、回答是否结束来判定状态。没有变化的文件不会重复读取。
+3. 通过 Claude Code 为每个进程写入的 `~/.claude/sessions/<pid>.json` 确认会话是否仍然打开。
+4. 只在状态发生变化时通过 SSE 推送到浏览器，浏览器根据快照绘制办公室。即使打开多个标签页，服务器也只用一个定时器读取一次。
+
+<details>
+<summary><b>状态判定规则详解</b></summary>
+
+判定由 `server/analyze.ts` 中的纯函数负责，并由 `server/analyze.spec.ts` 验证。
+
+| 状态 | 条件 |
+|------|------|
+| 工作中 | 有尚未返回结果的 `tool_use`，或正在组织回答 |
+| 等待 | 等待中的工具是 `AskUserQuestion`，或主会话已经回答完、轮到你了 |
+| 打盹 | 距最后一条记录超过 120 秒没有任何动静 |
+| 无响应 | 子智能体超过 12 分钟没有收到工具结果。设得比 Bash 最大超时（10 分钟）更长；会再启动子智能体的 `Agent`、`Task`、`Workflow` 除外 |
+| 已离开 | 见下方的结束条件 |
+
+- **回答结束**仅指存在 `text` 块且 `stop_reason` 为 `end_turn`、`stop_sequence` 或 `max_tokens` 的情况。Claude Code 会把一次响应拆成多行记录（先是 thinking 行，1~3 秒后才是 `tool_use` 行），因此不会仅因为没有工具调用就判定为结束。
+- **子智能体结束**是指 `SubagentHandback` 收到成功结果，或写下了回答结束的行。之后如果重新开始工作，会回到工作中。
+- **主会话离开**是指使用该会话的 Claude Code 进程已结束（关闭了窗口，或通过 `/clear` 等切换到了其他会话）。只要进程还在，无论多安静都会留在座位上；刚创建的会话有 30 秒宽限期。在无法读取进程信息的环境（旧版本等）中，若没有等待中的工具且安静超过 10 分钟则离开。
+- 已结束的子智能体会为离场动画再显示 60 秒。进程已结束的会话，其子智能体也会随之立即离开。
+- **子智能体工作期间的主会话**，即使自身记录看起来是等待或打盹，也视为工作中（`Agent`）。因为后台智能体的 `Agent` 结果会立即返回，仅看主会话的记录会像是轮到你了。
+- **子智能体名称**取自 `meta.json` 中的 `agentType`。如果 jsonl 比 meta 先出现，会最多等待 5 秒，等 meta 到了再显示。
+- **项目名称**取会话记录中第一个 `cwd`（会话启动时所在的文件夹）的最后一段。之后的 `cwd` 会随 shell 的 `cd` 改变，因此不使用。
+
+</details>
+
+<details>
+<summary><b>区域不够时</b></summary>
+
+办公室有 4 个区域。存活的会话更多时，HUD 会显示提示，并按以下顺序分配区域：
+
+1. 空区域优先给正在工作的会话（主会话或子智能体在工作），其次按最近活动排序。
+2. 如果区域已满而仍有正在工作的会话被挤在外面，则让不在工作的会话中最久没有动静的那个会话的角色离场，把区域让出来。
+3. 正在工作的会话之间不会互相挤占（避免活动时间一变座位就来回调换）。
+
+</details>
+
+## 配置
+
+### 适配你的项目
+
+任何项目的会话和子智能体都**无需配置**即可显示。所有可调整的值都集中在 [`src/agent-office/office.config.ts`](src/agent-office/office.config.ts) 这一个文件中。
+
+| 设置 | 作用 | 留空时 |
+|------|------|------|
+| `AGENT_LOOKS` | 按智能体类型设置角色模型和衣服颜色 | 模型按类型名称选择，衣服颜色从 22 种候选色中自动挑选，不同类型之间不重复 |
+| `SEAT_OF_TYPE` | 按智能体类型设置偏好座位（0~5） | `SEAT_OTHER` 座位 → 任意空位 |
+| `AGENT_NAMES` | 名牌上显示的名称 | 直接使用 `agentType`。插件智能体（`feature-dev:code-reviewer`）显示为 `code-reviewer` |
+| `OFFICE_ART` | 沙发上方画框里的图（`'seaside'` 海边、`'skyline'` 晚霞楼群像素画） | 为 `null` 时显示 `OFFICE_SIGN` 文字 |
+| `OFFICE_SIGN` | 墙上画框里的文字 | 两者都为空则不挂画框 |
+| `MAIN_STAYS_SEATED` | 主 Claude 始终坐在自己的座位上（默认 `true`） | 为 `false` 时，等待期间会去休息区，长时间安静会四处走动 |
+
+```ts
+// 示例：给你的智能体设置名称和座位
+export const AGENT_NAMES: Record<string, string> = {
+  'general-purpose': '通用',
+  'feature-dev:code-reviewer': '审查员',
+}
+export const SEAT_OF_TYPE: Record<string, number> = { main: 5, 'feature-dev:code-reviewer': 4 }
+```
+
+### 用量实时更新（可选）
+
+墙上电视默认显示 Claude Code 保存在 `~/.claude.json` 中的用量，但这个值只是偶尔更新。Claude Code 每次绘制状态栏时都会把最新用量传给状态栏命令，因此在状态栏前加一个小桥接脚本，电视就能实时更新。
+
+```bash
+npm run statusline:install    # 安装：保存当前状态栏命令（如 claude-hud）并用桥接脚本包装
+npm run statusline:uninstall  # 卸载：恢复原来的状态栏
+```
+
+- 桥接脚本（`scripts/statusline-bridge.mjs`）只把用量百分比写入 `~/.claude/agent-office-usage.json`，然后用同样的输入运行原来的状态栏命令，并原样输出结果。状态栏外观不变。
+- 安装时会把 `settings.json` 备份为 `settings.json.agent-office-backup`，只修改 `statusLine` 命令。
+- 移动项目文件夹后桥接路径会改变，请重新安装。
+
+### 端口
+
+默认端口是 **5180**，选它是为了避开其他 Vite 项目（默认 5173）。如果端口已被占用，服务器会直接报错，而不会换用其他端口（`strictPort`）。如需更改，请修改 [`vite.config.ts`](vite.config.ts) 中的 `server.port`。
+
+### 会话记录位置
+
+默认是 `~/.claude/projects`（Windows 上为 `%USERPROFILE%\.claude\projects`）。如果你用 `CLAUDE_CONFIG_DIR` 移动了 Claude Code 的配置文件夹，请在启动开发服务器的 shell 中设置相同的值。
+
+```bash
+CLAUDE_CONFIG_DIR=/path/to/claude-config npm run dev
+```
+
+> [!TIP]
+> 如果你在 **WSL** 中使用 Claude Code，请同样在 WSL 中启动 Agent Office。在 Windows 侧启动的话，读取的是 Windows 用户文件夹，而不是 WSL 中的 `~/.claude`。
+
+## 安全与隐私
+
+会话记录中包含对话原文和工具的输入输出，可能夹杂敏感信息。因此 Agent Office 遵守以下原则：
+
+- 发送到浏览器的字段只有 **会话 ID、项目名称、智能体 ID、智能体类型、说明、工具名称、时间、状态、用量百分比和重置时间**。
+- 用量只从 Claude Code 保存在 `~/.claude.json` 中的值（`cachedUsageUtilization`）读取数字。不读取登录信息，也不调用 API，因此 Claude Code 重新获取用量后电视才会更新（安装状态栏桥接后，每次绘制状态栏都会更新）。消息正文和工具的输入、结果都不会发送。
+- 服务器只绑定 `localhost`，并且仅当请求的远程地址和 `Host` 头都是回环地址时才响应（否则返回 `403`）。这也能防止外部页面通过 DNS 重绑定读取数据。
+- 没有登录功能，请勿将服务器暴露到网络上。
+
+## 已知限制
+
+- **会话记录格式并非公开约定。** 它可能随 Claude Code 版本变化，导致状态判定出现偏差。未知字段会被忽略，损坏的行会被跳过。
+- 只有 4 个区域，同时打开 5 个及以上会话时，部分会话不会显示。
+- 无法确认进程的情况下（例如用在 Windows 上启动的 Agent Office 查看 WSL 中的 Claude Code），会视为会话仍然打开。
+- 子智能体被强制终止后，需要 12 分钟才会显示 `无响应`（留出余量，避免把长时间构建误判）。
+- 摄像机从后方俯视坐着的角色，因此打字动作不如从正面看那样清楚。
+
+## 开发
+
+| 命令 | 说明 |
+|------|------|
+| `npm run dev` | 开发服务器（<http://localhost:5180>） |
+| `npm test` | 单元测试（Vitest） |
+| `npm run typecheck` | 类型检查（界面用 `vue-tsc`，服务器和配置用 `tsc`） |
+| `npm run build` | 静态构建（用于检查类型和打包） |
+
+```
+index.html, src/main.ts             单页入口
+src/App.vue                         HUD · SSE 连接 · 详情卡片 · 可见性处理
+src/i18n.ts                         界面文案词典（韩语 · 英语 · 日语 · 中文）
+scripts/check-deps.mjs              在 npm run dev 之前检查依赖是否为本机安装
+src/agent-office/scene.ts           three.js 场景 — 角色 · 移动 · 气泡 · 区域分配
+src/agent-office/layout.ts          办公室布局（纯数据）· 寻路
+src/agent-office/tvScreen.ts        墙上电视画面（用量仪表、时钟）
+src/agent-office/windowView.ts      窗外景色（按时间变化的天空、太阳、月亮与城市灯光）
+src/agent-office/assets.ts          GLB 加载器 · 动画片段合成（打字等）
+src/agent-office/office.config.ts   项目级设置
+src/agent-office/assets/            Kenney 3D 模型（CC0）
+server/plugin.ts                    Vite 插件 — 会话扫描 · SSE · 回环检查
+server/analyze.ts                   状态判定纯函数
+```
+
+测试覆盖状态判定规则、区域分配、布局（通道是否被堵、显示器是否放得下）、气泡文案、语言词典（所有语言是否拥有相同的键）以及角色颜色对比度。涉及 3D 画面的修改，也请用 `npm run dev` 启动后亲眼确认。
+
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request。
+
+- 如果 Claude Code 升级后状态显示异常，请在 Issue 中写明当时的情况、看到的现象以及 Claude Code 版本。附上会话记录时，请务必先删除其中的对话内容。
+- 提交 PR 前，请确认 `npm test` 和 `npm run typecheck` 都能通过。
+- 如果修改了状态判定规则，请在 `server/analyze.spec.ts` 中一并加入能复现该情况的测试。
+- 新增界面文案时，请把它加到 `src/i18n.ts` 的全部四种语言词典中（缺少任何一个都会导致类型检查失败）。新增语言也只需再加一个词典。
+
+## 致谢与许可证
+
+- 代码：[MIT](LICENSE)
+- 3D 模型：[Kenney](https://kenney.nl) 的 **Furniture Kit 2.0** · **Mini Characters 1.0** — [CC0 1.0](src/agent-office/assets/LICENSE-kenney.txt)
+- Claude 和 Claude Code 是 Anthropic 的商标。本项目是与 Anthropic 无关的非官方工具。

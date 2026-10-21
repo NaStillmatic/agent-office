@@ -1,0 +1,2500 @@
+/**
+ * AI 작업 사무실 장면(three.js). 아이소메트릭으로 고정한 정사영 카메라로 내려다보고,
+ * 이름표·말풍선은 한글 표시를 위해 CSS2DRenderer 로 올린다.
+ * 캐릭터는 Kenney Mini Characters 이고, 걷기·서 있기·앉기는 모델 안의 클립(walk, idle, sit)을 쓴다.
+ * 모델에 타이핑 클립이 없어 `sit` 하체에 `interact-*` 상체를 합친 클립으로 대신한다(assets.ts).
+ */
+import {
+  ACESFilmicToneMapping,
+  Box3,
+  BoxGeometry,
+  AmbientLight,
+  AnimationAction,
+  AnimationMixer,
+  CanvasTexture,
+  CircleGeometry,
+  CylinderGeometry,
+  Color,
+  DirectionalLight,
+  Group,
+  HemisphereLight,
+  InstancedMesh,
+  LoopRepeat,
+  Material,
+  Matrix4,
+  Mesh,
+  MeshBasicMaterial,
+  NearestFilter,
+  MeshStandardMaterial,
+  SkinnedMesh,
+  type Object3D,
+  OrthographicCamera,
+  PCFShadowMap,
+  PlaneGeometry,
+  PointLight,
+  RepeatWrapping,
+  RingGeometry,
+  SRGBColorSpace,
+  Scene,
+  Texture,
+  TorusGeometry,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
+} from 'three'
+import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import {
+  CHARACTER_NAMES,
+  loadOfficeAssets,
+  releaseOfficeAssets,
+  type CharacterModel,
+  type OfficeAssets,
+} from './assets'
+import {
+  D,
+  DOOR,
+  LAYOUT,
+  TEAM_COLORS,
+  WALL_SY,
+  W,
+  ZONE_COUNT,
+  ZONE_ORIGIN,
+  ZONE_SIZE,
+  SEAT_YAW,
+  findPath,
+  freePois,
+  pickRestSpot,
+  shouldRest,
+  type Item,
+  type P2,
+  type Poi,
+  type RestSpot,
+  type Seat,
+  type SofaSeat,
+  type WallFrame,
+  type WallWindow,
+} from './layout'
+import { AGENT_LOOKS, AGENT_NAMES, MAIN_STAYS_SEATED, SEAT_OF_TYPE, SEAT_OTHER } from './office.config'
+import { t } from '../i18n'
+import { drawWindowView, nightness } from './windowView'
+import { drawTvScreen, type UsageInfo } from './tvScreen'
+
+export interface Status {
+  state: 'working' | 'waiting' | 'idle' | 'ended'
+  tool: string | null
+  lastAt: number
+}
+export interface AgentInfo extends Status {
+  id: string
+  agentType: string
+  description: string
+}
+export type { UsageInfo }
+
+export interface SessionInfo {
+  id: string
+  /** 세션을 시작한 폴더 이름(서버가 cwd 로 정한다) */
+  project: string
+  main: Status
+  agents: AgentInfo[]
+}
+
+type Act = 'type' | 'read' | 'wait' | 'idle'
+type Goal = 'seat' | 'poi' | 'spot' | 'door' | 'coffee' | 'lounge' | 'tea'
+type ClipName = 'idle' | 'walk' | 'sit' | 'work' | 'read' | 'wait' | 'coffee'
+
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead', 'LS'])
+/** 모니터 몸체는 검정 대신 밝은 은색. 빈자리 화면은 모든 자리가 같은 파란색으로 켜져 있다 */
+const MONITOR_BODY = '#c9d1d6'
+const SCREEN_IDLE_COLOR = '#2f8fe0'
+const SCREEN_IDLE_GLOW = 0.55
+/**
+ * computerScreen 모델의 화면 면(재질 'metal', 모델 좌표). 위쪽이 뒤로 기운 사각형이라 그 위에 같은 기울기로
+ * 내용 판을 덧댄다. GLB 의 화면 면 꼭짓점을 잰 값이다.
+ */
+const SCREEN_FACE = { x0: 0.0068, x1: 0.3859, yBottom: 0.0556, zBottom: -0.0358, yTop: 0.287, zTop: -0.0683 }
+/** 터미널 텍스처: 한 줄 높이(px)·줄 수. 자리마다 보이는 창을 아래로 옮겨 스크롤한다 */
+const TERM_LINE = 14
+const TERM_LINES = 60
+/** 앉은 사람이 하는 일별 터미널 스크롤 속도(줄/초). 대기 중이면 멈춘다 */
+const TERM_SPEED = { bash: 14, type: 5, read: 2 }
+const WALK_SPEED = 1.6 // 월드 단위/초
+const CHAR_SCALE = 1.1
+/** 서 있는 모델의 머리 끝 높이(모델 좌표, 스케일 1 기준) */
+const MODEL_HEAD_TOP = 0.671
+/** sit 클립이 뿌리를 낮추는 높이(모델 좌표, 스케일 1 기준) */
+const SIT_ROOT_DROP = 0.15
+const CHAR_HEIGHT = MODEL_HEAD_TOP * CHAR_SCALE
+/** chairDesk 방석 윗면 높이(모델 좌표, 의자 스케일 1 기준) */
+const SEAT_TOP = 0.233
+/** 앉은 자세에서 허벅지 아랫면의 모델 좌표 높이(몸통 밑면보다 낮다). 이 면이 방석 윗면에 얹힌다 */
+const SIT_THIGH_BOTTOM = -0.098
+const WALL_MODELS = new Set(['wall', 'wallWindow', 'wallDoorway'])
+const NO_SHADOW = new Set(['rugRound', 'rugDoormat', ...WALL_MODELS])
+const WALL_COLOR = new Color('#f1d18a')
+/** 휴게 공간 소파·1인용 의자의 천 색(밝은 머스터드, 딥 틸 러그와 보색). 모델 원래 색은 연어빛 분홍 */
+const SOFA_COLOR = new Color('#e8b33c')
+/** 천 소파라 거의 무광 */
+const SOFA_ROUGHNESS = 0.85
+const SOFA_MODELS = ['loungeSofa', 'loungeChair']
+/** 램프 불빛 색과 한밤 세기 */
+const LAMP_GLOW = '#ffbf73'
+const LAMP_POWER = 2.2
+/** 창문 유리 색(하늘빛 파랑) */
+const WINDOW_GLASS = '#7cc4f2'
+/** 둥근 러그: 나무 바닥·가죽 소파(주황빛 갈색)와 보색이라 눈에 띄는 딥 틸 바탕과 더 짙은 테(재질 이름별) */
+const RUG_COLORS: Record<string, Color> = { carpet: new Color('#2c7a7b'), carpetDarker: new Color('#1d5556') }
+
+/** 캐릭터 모델 이름(`character-` 접두 뺀 것)으로 CHARACTER_NAMES 번호를 구한다. 표에 없는 이름이면 로드 시점에 바로 던진다(개발 화면이라 fail-fast) */
+export function charOf(name: string) {
+  const i = CHARACTER_NAMES.indexOf(`character-${name}`)
+  if (i < 0) throw new Error(`Unknown character model: ${name} (see CHARACTER_NAMES in assets.ts)`)
+  return i
+}
+
+/**
+ * 자동 배정 옷 색 후보. 서로 CIE Lab 거리 20 이상이고 메인 옷 색과도 떨어져 있다(테스트가 검사).
+ * office.config.ts AGENT_LOOKS 에 없는 종류가 이 중에서 고른다(pickClothesColor).
+ */
+export const CLOTHES_COLORS = [
+  '#30a46c', '#8e4ec6', '#3e63dd', '#d62839', '#0b8f8a', '#e0409a', '#eceff4', '#4cc3f0',
+  '#c4551d', '#c3d62b', '#ffd43b', '#b8793f', '#4a5568', '#a8f0d0', '#a3264f', '#6b7d1e',
+  '#f4b183', '#ff8a8a', '#b7a1f2', '#9aa5b8', '#ffb3c7', '#2f5d3a',
+]
+
+/** 표의 모델 이름이 CHARACTER_NAMES 에 모두 있는지 로드 시점에 확인한다 */
+const MODEL_BY_TYPE: Record<string, number> = Object.fromEntries(
+  Object.entries(AGENT_LOOKS).map(([type, look]) => [type, charOf(look.model)]),
+)
+
+function hashOf(type: string) {
+  let h = 0
+  for (let i = 0; i < type.length; i++) h = (h * 31 + type.charCodeAt(i)) >>> 0
+  return h
+}
+
+/**
+ * 표에 없는 종류의 옷 색. 종류 이름으로 정한 후보부터 보고, 이미 다른 종류가 쓰는 색(taken)이면 다음 후보로 넘어간다.
+ * 그래서 같은 종류는 대체로 늘 같은 색이고, 한 화면의 종류끼리는 후보가 남는 한 겹치지 않는다.
+ * AGENT_LOOKS 에 고정한 색은 후보에서 뺀다. 후보가 다 쓰이면 겹치더라도 이름으로 정한 색을 쓴다.
+ */
+export function pickClothesColor(type: string, taken: ReadonlySet<string>) {
+  const pinned = new Set(Object.values(AGENT_LOOKS).map((l) => l.color))
+  const pool = CLOTHES_COLORS.filter((c) => !pinned.has(c))
+  const start = hashOf(type) % pool.length
+  for (let i = 0; i < pool.length; i++) {
+    const c = pool[(start + i) % pool.length]
+    if (!taken.has(c)) return c
+  }
+  return pool[start]
+}
+
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+/** variant 한 단계마다 모델 번호를 건너뛰는 간격. 풀 크기와 서로소여야 같은 타입끼리 모델이 한 바퀴 돌 때까지 겹치지 않는다 */
+export function variantStep(poolSize: number) {
+  let s = Math.max(2, Math.floor(poolSize / 2))
+  while (gcd(s, poolSize) !== 1) s++
+  return s
+}
+const VARIANT_STEP = variantStep(CHARACTER_NAMES.length)
+
+/** 같은 agentType 이 여럿이면 variant(0,1,2…)마다 다른 모델을 쓴다(옷 색은 종류 색 그대로) */
+export function charIndexOf(type: string, isMain: boolean, variant: number) {
+  const base = isMain
+    ? MODEL_BY_TYPE.main
+    : (MODEL_BY_TYPE[type] ?? hashOf(type) % CHARACTER_NAMES.length)
+  return (base + variant * VARIANT_STEP) % CHARACTER_NAMES.length
+}
+
+/** 앉는 자리 한 곳(책상 의자 또는 소파). 앉은 높이와 일어나 나오는 지점을 담는다 */
+interface SitSpot {
+  x: number
+  z: number
+  yaw: number
+  /** 일어나 나오는 지점 */
+  cx: number
+  cz: number
+  /** 방석 윗면의 월드 높이 */
+  seatTop: number
+  /** 소파면 true. 일하는 동작 대신 그냥 앉은 클립을 쓴다 */
+  sofa: boolean
+}
+
+const deskSit = (s: Seat): SitSpot => ({
+  x: s.x,
+  z: s.z,
+  yaw: SEAT_YAW,
+  cx: s.cx,
+  cz: s.cz,
+  seatTop: SEAT_TOP * s.chairHeight,
+  sofa: false,
+})
+
+/** 앉은 자세의 홀더 높이: 허벅지 아랫면이 방석 윗면에 얹히게 올린다 */
+const liftOf = (seatTop: number) => seatTop - CHAR_SCALE * SIT_THIGH_BOTTOM
+
+interface Char {
+  key: string
+  session: string
+  zone: number
+  typeKey: string
+  /** 이름표의 이름 칸. agentType 이 늦게 들어오면 바꿔 쓴다 */
+  nameTextEl: HTMLElement
+  title: string
+  isMain: boolean
+  status: Status
+  act: Act
+  seat: Seat | null
+  spot: P2 | null
+  x: number
+  z: number
+  yaw: number
+  targetYaw: number
+  path: P2[]
+  mode: 'walk' | 'sit' | 'stand'
+  goal: Goal
+  poi: Poi | null
+  /** 지금 앉아 있는(또는 앉으러 가는) 자리. mode 가 sit 일 때만 의미가 있다 */
+  sitAt: SitSpot | null
+  /** 쉬러 간 자리(소파·의자 좌석, 커피 자리, 휴게 공간 서 있는 자리). 쉬는 동안만 값이 있다 */
+  rest: RestSpot | null
+  /** 한가할 때 잠깐 앉으러 가는 티테이블 의자(goal 'tea') */
+  tea: SofaSeat | null
+  /** 오른손에 든 컵(커피 마시는 동안만) */
+  cup: Mesh | null
+  /** 쉬러 가는 길에 커피 머신에 들를지 */
+  coffeeFirst: boolean
+  idleTimer: number
+  standTimer: number
+  leaving: boolean
+  removed: boolean
+  /** 입장 전 대기(여럿이 한꺼번에 들어와 겹치지 않게 시차를 둔다) */
+  delay: number
+  holder: Group
+  ring: Group
+  mixer: AnimationMixer
+  actions: Partial<Record<ClipName, AnimationAction>>
+  clips: CharacterModel['clips']
+  playing: ClipName | null
+  label: CSS2DObject
+  tagEl: HTMLElement
+  textEl: HTMLElement
+  labelEl: HTMLElement
+  /** 이름표 위 말풍선: 작업 중이면 도구 칩 + 설명, 응답 대기면 점 세 개 */
+  bubbleEl: HTMLElement
+  dotsEl: HTMLElement
+  shownText: string
+  shownTag: string
+  /** 메인이 막 띄운 에이전트를 아직 못 찾음(spawningAgent) */
+  spawning: boolean
+}
+
+/** 컵 위치(오른팔 본 로컬 좌표). 손 정점을 재서 맞춘 값 */
+const CUP_HAND = { x: -0.26, y: 0, z: 0.04 }
+
+/**
+ * 서브에이전트 이름표에 쓰는 이름. 어떤 프로젝트의 agentType 이 와도 읽히도록 규칙으로 정한다.
+ * - office.config.ts AGENT_NAMES 에 적은 이름이 있으면 그것
+ * - 플러그인 에이전트(`플러그인:에이전트`)는 에이전트 이름만(전체 이름은 상세 카드에 나온다)
+ * - agentType 을 모르면(meta.json 이 없는 드문 기록) '서브에이전트'(지금 언어로)
+ */
+export function agentLabel(type: string) {
+  if (AGENT_NAMES[type]) return AGENT_NAMES[type]
+  if (!type) return t().subagent
+  return type.slice(type.lastIndexOf(':') + 1) || type
+}
+
+/** 이름표 1줄에 쓰는 이름 */
+const agentNameOf = (type: string, isMain: boolean) => (isMain ? t().mainName : agentLabel(type))
+
+const rand = (a: number, b: number) => a + Math.random() * (b - a)
+
+function actOf(s: Status): Act {
+  if (s.state === 'waiting') return 'wait'
+  if (s.state === 'idle') return 'idle'
+  return s.tool && READ_TOOLS.has(s.tool) ? 'read' : 'type'
+}
+
+/** 서브에이전트를 띄우는 도구. Task 는 예전 Claude Code 의 이름이다 */
+const AGENT_TOOLS = new Set(['Agent', 'Task'])
+
+/**
+ * 메인 말풍선 설명. 에이전트를 기다리는 중이면 칩(Agent)만으로는 누구를 기다리는지 모르므로
+ * 일하는 에이전트 이름(같은 종류가 여럿이면 ×인원수)을 적는다. 그 밖에는 이름표와 같아 설명 줄이 숨겨진다.
+ */
+export function mainTitle(s: SessionInfo) {
+  const busy = s.agents.filter((a) => a.state === 'working')
+  if (!s.main.tool || !AGENT_TOOLS.has(s.main.tool) || !busy.length) return t().mainName
+  // 같은 종류가 여럿이면 이름 뒤에 인원수를 붙인다(이름을 한 번만 적으면 한 명만 일하는 것처럼 보인다)
+  const count = new Map<string, number>()
+  for (const a of busy) count.set(agentLabel(a.agentType), (count.get(agentLabel(a.agentType)) ?? 0) + 1)
+  const names = [...count].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
+  return t().waitingFor(names.join(' · '))
+}
+
+/** 메인이 에이전트를 띄웠는데 아직 그 에이전트 기록이 안 잡힌 순간(1~2초). 이름 대신 점 세 개를 띄운다 */
+export function spawningAgent(s: SessionInfo) {
+  return !!s.main.tool && AGENT_TOOLS.has(s.main.tool) && !s.agents.some((a) => a.state === 'working')
+}
+
+/**
+ * 도구 이름을 말풍선에 맞게 줄인다. MCP 도구(`mcp__<서버>__<도구>`)는 이름이 길고 내부 식별자라
+ * `서버 · 도구` 로 바꾼다. 플러그인 서버는 `plugin_<플러그인>_<서버>` 꼴이라 둘이 같으면 하나만 남긴다.
+ * 예: mcp__plugin_playwright_playwright__browser_take_screenshot → playwright · take screenshot
+ */
+export function toolLabel(name: string) {
+  if (!name.startsWith('mcp__')) return name
+  const [rawServer, ...rest] = name.slice(5).split('__')
+  let server = rawServer.replace(/^plugin_/, '').replace(/^claude_ai_/, '')
+  const half = server.split('_')
+  if (half.length === 2 && half[0] === half[1]) server = half[0]
+  const tool = rest.join('__').replace(/^browser_/, '')
+  return [server, tool]
+    .filter(Boolean)
+    .map((t) => t.replace(/_/g, ' '))
+    .join(' · ')
+}
+
+/** 메인이나 서브 중 하나라도 일하고 있는 세션 */
+export const isBusy = (s: SessionInfo) =>
+  s.main.state === 'working' || s.agents.some((a) => a.state === 'working')
+
+/** 세션의 마지막 활동 시각(메인·서브 중 가장 최근) */
+const activeAt = (s: SessionInfo) => Math.max(s.main.lastAt, ...s.agents.map((a) => a.lastAt))
+
+/**
+ * 구역 배정. zones 는 구역별 세션 id(빈 구역 null), live 는 화면에 나올 세션, leaving 은 이미
+ * 비켜 주는 중인(캐릭터가 나가는) 세션이다.
+ * - 빈 구역은 일하는 세션 → 최근 활동순으로 채운다.
+ * - 구역이 모자라면 일하는 세션을 위해서만, 일하지 않는 세션 중 가장 오래 조용한 것을 비켜 세운다(evict).
+ *   일하는 세션끼리는 밀어내지 않는다 — 활동 시각이 바뀔 때마다 자리가 뒤바뀌며 들락거리지 않도록.
+ * - 이미 나가는 중인 구역은 곧 비므로, 그만큼은 새로 비켜 세우지 않는다.
+ */
+export function planZones(
+  zones: readonly (string | null)[],
+  live: readonly SessionInfo[],
+  leaving: ReadonlySet<string>,
+): { zones: (string | null)[]; evict: string[] } {
+  const next = [...zones]
+  const byId = new Map(live.map((s) => [s.id, s]))
+  const waiting = live
+    .filter((s) => !next.includes(s.id))
+    .sort((a, b) => Number(isBusy(b)) - Number(isBusy(a)) || activeAt(b) - activeAt(a))
+  const evict: string[] = []
+  let freeing = next.filter((id) => id !== null && (!byId.has(id) || leaving.has(id))).length
+  for (const s of waiting) {
+    const free = next.indexOf(null)
+    if (free >= 0) {
+      next[free] = s.id
+      continue
+    }
+    if (!isBusy(s)) break // 일하지 않는 세션은 남는 구역이 생길 때만 들어온다
+    if (freeing > 0) {
+      freeing--
+      continue
+    }
+    const victim = next
+      .map((id) => (id ? byId.get(id) : undefined))
+      .filter((h): h is SessionInfo => !!h && !isBusy(h) && !leaving.has(h.id) && !evict.includes(h.id))
+      .sort((a, b) => activeAt(a) - activeAt(b))[0]
+    if (!victim) break
+    evict.push(victim.id)
+  }
+  return { zones: next, evict }
+}
+
+/** 도구 결과를 너무 오래 못 받은 서브(서버가 idle 로 내리되 도구 이름은 남긴다) */
+const isStalled = (s: Status) => s.state === 'idle' && s.tool !== null
+
+/** 말풍선 칩 문구. 도구가 없으면 모델이 답변·다음 호출을 만드는 중이라 '작업 중'이다 */
+function toolText(s: Status) {
+  if (isStalled(s)) return t().state.stalled
+  return s.tool ? toolLabel(s.tool) : t().state.working
+}
+
+function turnToward(cur: number, target: number, step: number) {
+  let diff = (target - cur) % (Math.PI * 2)
+  if (diff > Math.PI) diff -= Math.PI * 2
+  if (diff < -Math.PI) diff += Math.PI * 2
+  if (Math.abs(diff) <= step) return target
+  return cur + Math.sign(diff) * step
+}
+
+/**
+ * 헤링본 바닥 텍스처 한 장이 덮는 월드 길이. 판자를 45° 눕힌 무늬의 반복 주기(√2·판자 폭, 4√2·판자 폭)가
+ * 텍스처(512px)에 딱 나눠떨어지도록 2√2 로 잡는다. 그러면 판자 폭이 0.25, 길이가 1.0 이 된다.
+ */
+const FLOOR_TILE = 2 * Math.SQRT2
+
+/**
+ * 헤링본 나무 바닥 텍스처(FLOOR_TILE × FLOOR_TILE 월드, 512px). 판자가 벽에 45° 로 놓여 끝이 V 자로 맞물린다.
+ * 먼저 판자를 0°·90° 로 계단처럼 놓은 무늬(가로 판자 (n, n), 세로 판자 (n, n+1), 띠를 (4W, -4W) 씩 옮김)를 그리고,
+ * 캔버스를 -45° 돌려 그린다. 판자 폭 W 를 512/(8√2) px 로 잡아 돌린 무늬의 반복 주기(64px·256px)가 512px 에 나눠떨어진다.
+ * 판자 색은 따뜻한 나무 톤 네 가지 중에서, 경계에서 끊기지 않게 반복 주기 안의 위치((i-4j) mod 8)로 고른다.
+ */
+const WOOD_TONES = ['hsl(30 52% 61%)', 'hsl(28 50% 57%)', 'hsl(32 55% 64%)', 'hsl(27 48% 54%)']
+function woodTexture() {
+  const size = 512
+  const u = size / (8 * Math.SQRT2) // 판자 폭(px)
+  const len = 4 // 판자 길이(폭의 배수)
+  const cv = document.createElement('canvas')
+  cv.width = cv.height = size
+  const g = cv.getContext('2d')!
+  const plank = (x: number, y: number, w: number, h: number, tone: string) => {
+    g.fillStyle = tone
+    g.fillRect(x, y, w, h)
+    // 이음매: 위·왼쪽은 어두운 선, 그 안쪽에 옅은 밝은 선을 그어 판자가 살짝 도드라져 보이게 한다
+    g.fillStyle = 'rgba(90,50,20,0.45)'
+    g.fillRect(x, y, w, 2)
+    g.fillRect(x, y, 2, h)
+    g.fillStyle = 'rgba(255,235,200,0.12)'
+    g.fillRect(x + 2, y + 2, w - 2, 2)
+  }
+  const tone = (i: number, j: number, vertical: boolean) => {
+    const k = (((i - len * j) % 8) + 8) % 8
+    return WOOD_TONES[(k * 5 + (vertical ? 3 : 0)) % WOOD_TONES.length]
+  }
+  // 캔버스 좌표 q = R(-45°)·p. 캔버스 [0,512]² 는 돌리기 전 좌표로 x ∈ [-362, 362], y ∈ [0, 724] 쯤이다
+  g.rotate(-Math.PI / 4)
+  const reach = Math.ceil((size * Math.SQRT2) / u) + len + 2
+  for (let i = -reach; i <= reach; i++) {
+    for (let j = -reach; j <= reach; j++) {
+      const bx = i + len * j
+      const by = i - len * j
+      if (bx < -reach || bx > reach || by < -len - 2 || by > reach) continue
+      plank(bx * u, by * u, len * u, u, tone(i, j, false)) // 가로 판자
+      plank(bx * u, (by + 1) * u, u, len * u, tone(i, j, true)) // 세로 판자
+    }
+  }
+  const tex = new CanvasTexture(cv)
+  tex.wrapS = tex.wrapT = RepeatWrapping
+  tex.colorSpace = SRGBColorSpace
+  tex.anisotropy = 8
+  return tex
+}
+
+/**
+ * 액자 글자 판: 밝은 크림 바탕에 짙은 남색 굵은 산세리프 글자(두 줄)와 주황 밑줄. 글자 한 줄의 크기가 판 높이의 42% 라 멀리서도 읽힌다.
+ * 1024px 높이로 그리고 anisotropy·sRGB 를 맞춰 비스듬한 시점에서도 또렷하게 한다.
+ */
+function frameTexture(text: string, aspect: number, maxAniso: number) {
+  const h = 1024
+  const w = Math.round(h * aspect)
+  const cv = document.createElement('canvas')
+  cv.width = w
+  cv.height = h
+  const g = cv.getContext('2d')!
+  g.fillStyle = '#fff4d6'
+  g.fillRect(0, 0, w, h)
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  const lines = text.split(' ')
+  const font = (px: number) =>
+    `900 ${px}px "Helvetica Neue", Arial, "Apple SD Gothic Neo", sans-serif`
+  let size = Math.round(h * 0.42)
+  g.font = font(size)
+  while (Math.max(...lines.map((l) => g.measureText(l).width)) > w * 0.88 && size > 40) {
+    size -= 8
+    g.font = font(size)
+  }
+  g.fillStyle = '#14213d'
+  const gap = size * 0.98
+  const top = h * 0.46 - ((lines.length - 1) * gap) / 2
+  lines.forEach((l, i) => g.fillText(l, w / 2, top + i * gap))
+  g.fillStyle = '#e8590c'
+  g.fillRect(w * 0.3, h * 0.93, w * 0.4, 14)
+  const tex = new CanvasTexture(cv)
+  tex.colorSpace = SRGBColorSpace
+  tex.anisotropy = Math.min(8, maxAniso)
+  return tex
+}
+
+/** 화면 면의 가로세로 비(기울어진 세로 길이 기준) */
+const SCREEN_ASPECT =
+  (SCREEN_FACE.x1 - SCREEN_FACE.x0) /
+  Math.hypot(SCREEN_FACE.yTop - SCREEN_FACE.yBottom, SCREEN_FACE.zTop - SCREEN_FACE.zBottom)
+
+/** 모니터 화면용 캔버스 텍스처 공통 설정 */
+function screenTexture(cv: HTMLCanvasElement, maxAniso: number) {
+  const tex = new CanvasTexture(cv)
+  tex.colorSpace = SRGBColorSpace
+  tex.anisotropy = Math.min(8, maxAniso)
+  return tex
+}
+
+/** 왼쪽 모니터: 디자인 툴 화면(레이어 목록·캔버스 위 아트보드·속성 패널). 모든 자리가 같은 그림을 나눠 쓴다 */
+function designTexture(maxAniso: number) {
+  const w = 324
+  const h = Math.round(w / SCREEN_ASPECT)
+  const cv = document.createElement('canvas')
+  cv.width = w
+  cv.height = h
+  const g = cv.getContext('2d')!
+  const box = (x: number, y: number, bw: number, bh: number, c: string) => {
+    g.fillStyle = c
+    g.fillRect(x, y, bw, bh)
+  }
+  box(0, 0, w, h, '#dfe2ea') // 캔버스 바탕
+  box(0, 0, w, 14, '#2b2f45') // 제목 표시줄
+  ;['#ff6b6b', '#f0c56a', '#7fe0a0'].forEach((c, i) => box(6 + i * 9, 5, 5, 5, c))
+  box(0, 14, 58, h - 14, '#ffffff') // 레이어 목록
+  for (let i = 0; i < 9; i++) box(8, 24 + i * 15, 30 + ((i * 13) % 14), 5, i === 2 ? '#3e63dd' : '#c9ccdf')
+  box(w - 58, 14, 58, h - 14, '#ffffff') // 속성 패널
+  for (let i = 0; i < 7; i++) {
+    box(w - 50, 24 + i * 18, 18, 4, '#c9ccdf')
+    box(w - 28, 22 + i * 18, 20, 8, '#eef0f6')
+  }
+  // 아트보드: 머리글·큰 이미지·카드 셋·버튼
+  const ax = 74
+  const ay = 24
+  const aw = w - 148
+  const ah = h - 34
+  box(ax, ay, aw, ah, '#ffffff')
+  box(ax, ay, aw, 14, '#3e63dd')
+  box(ax + 10, ay + 22, aw - 20, 46, '#f0c56a')
+  box(ax + 10, ay + 74, aw * 0.5, 6, '#2b2f45')
+  box(ax + 10, ay + 84, aw * 0.7, 4, '#c9ccdf')
+  const cw = (aw - 40) / 3
+  ;['#30a46c', '#e0409a', '#4cc3f0'].forEach((c, i) => {
+    const cx = ax + 10 + i * (cw + 10)
+    box(cx, ay + 96, cw, 40, '#eef0f6')
+    box(cx, ay + 96, cw, 14, c)
+    box(cx + 4, ay + 116, cw - 12, 3, '#c9ccdf')
+    box(cx + 4, ay + 123, cw - 20, 3, '#c9ccdf')
+  })
+  box(ax + 10, ay + ah - 18, 44, 11, '#ff9f1c')
+  // 선택한 카드: 파란 테두리와 모서리 손잡이
+  const sx = ax + 10 + cw + 10
+  const sy = ay + 96
+  g.strokeStyle = '#3e63dd'
+  g.lineWidth = 2
+  g.strokeRect(sx - 2, sy - 2, cw + 4, 44)
+  for (const [hx, hy] of [
+    [sx - 2, sy - 2],
+    [sx + cw + 2, sy - 2],
+    [sx - 2, sy + 42],
+    [sx + cw + 2, sy + 42],
+  ]) {
+    box(hx - 2, hy - 2, 5, 5, '#ffffff')
+    g.strokeRect(hx - 2, hy - 2, 5, 5)
+  }
+  return screenTexture(cv, maxAniso)
+}
+
+/**
+ * 오른쪽 모니터: 터미널 출력. 세로로 긴 한 장(TERM_LINES 줄)을 그려 두고, 자리마다 이 텍스처를 복제해
+ * (이미지는 공유) 보이는 창(repeat·offset)만 아래로 옮겨 글자가 위로 흘러가게 한다. 위아래가 이어지게 반복된다.
+ */
+function terminalTexture(maxAniso: number) {
+  const w = 324
+  const h = TERM_LINE * TERM_LINES
+  const cv = document.createElement('canvas')
+  cv.width = w
+  cv.height = h
+  const g = cv.getContext('2d')!
+  g.fillStyle = '#0e1320'
+  g.fillRect(0, 0, w, h)
+  g.font = `${TERM_LINE - 3}px Menlo, Consolas, "DejaVu Sans Mono", monospace`
+  g.textBaseline = 'top'
+  const OUT: [string, string][] = [
+    ['$ npm test', '#7fe0a0'],
+    [' ✓ server/analyze.spec.ts (25)', '#7fe0a0'],
+    [' ✓ src/zones.spec.ts (5)', '#7fe0a0'],
+    [' ✓ src/layout.spec.ts (16)', '#7fe0a0'],
+    ['   Tests  71 passed (71)', '#c9ccdf'],
+    ['$ git status --short', '#7fe0a0'],
+    [' M src/agent-office/scene.ts', '#f0c56a'],
+    [' M README.md', '#f0c56a'],
+    ['$ npm run build', '#7fe0a0'],
+    ['vite v7.3.7 building for production...', '#c9ccdf'],
+    ['✓ 312 modules transformed.', '#7fe0a0'],
+    ['dist/assets/index.js   412.8 kB', '#7fb8ff'],
+    ['$ grep -rn "TODO" src', '#7fe0a0'],
+    ['src/app.ts:42:  // TODO: retry', '#7fb8ff'],
+    ['$ curl -s localhost:3000/health', '#7fe0a0'],
+    ['{"status":"ok","uptime":8123}', '#c9ccdf'],
+  ]
+  for (let i = 0; i < TERM_LINES; i++) {
+    const [text, color] = OUT[i % OUT.length]
+    g.fillStyle = color
+    g.fillText(text, 8, i * TERM_LINE + 2)
+  }
+  const tex = screenTexture(cv, maxAniso)
+  tex.wrapT = RepeatWrapping
+  tex.repeat.y = w / SCREEN_ASPECT / h
+  return tex
+}
+
+/**
+ * 액자 픽셀아트: 세피아 노을 아래 벽돌 아파트 단지. 낮은 해상도로 칠하고 NearestFilter 로 키워 픽셀이 보이게 한다.
+ * 매번 같은 그림이 나오도록 고정 시드 난수를 쓴다.
+ */
+/**
+ * 액자 픽셀아트: 해 뜬 바다. 맑은 하늘·구름·해, 물결과 햇빛 반짝임이 있는 바다, 돛단배, 거품 줄과 모래사장.
+ * 낮은 해상도로 칠하고 NearestFilter 로 키워 픽셀이 보이게 한다. 고정 시드 난수라 늘 같은 그림이다
+ */
+function seasideTexture(aspect: number) {
+  const h = 36
+  const w = Math.round(h * aspect)
+  const cv = document.createElement('canvas')
+  cv.width = w
+  cv.height = h
+  const g = cv.getContext('2d')!
+  let seed = 4242
+  const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32
+  const px = (x: number, y: number, c: string) => {
+    g.fillStyle = c
+    g.fillRect(x, y, 1, 1)
+  }
+  const horizon = Math.round(h * 0.5)
+  const shore = Math.round(h * 0.8)
+  // 하늘: 위는 맑은 파랑, 수평선 쪽은 옅은 하늘색. 띠 경계는 점묘로 섞는다
+  const SKY = ['#4fa3e0', '#5fb0e6', '#72bdeb', '#88caef', '#a3d7f2', '#bfe4f5']
+  for (let y = 0; y < horizon; y++) {
+    const t = (y / horizon) * (SKY.length - 1)
+    const i = Math.floor(t)
+    for (let x = 0; x < w; x++) px(x, y, SKY[Math.min(SKY.length - 1, i + (rnd() < t - i ? 1 : 0))])
+  }
+  // 구름 두 덩이
+  for (const [cx, cy, cw] of [
+    [Math.round(w * 0.22), 6, 9],
+    [Math.round(w * 0.6), 4, 7],
+  ]) {
+    for (let x = -cw; x <= cw; x++) {
+      const top = Math.round(Math.sqrt(Math.max(0, 1 - (x / cw) ** 2)) * 2.5)
+      for (let y = -top; y <= 1; y++) px(cx + x, cy + y, '#ffffff')
+    }
+  }
+  // 해
+  const sun = { x: Math.round(w * 0.8), y: Math.round(h * 0.2), r: 3 }
+  for (let y = -sun.r; y <= sun.r; y++) {
+    for (let x = -sun.r; x <= sun.r; x++) {
+      if (Math.hypot(x, y) <= sun.r) px(sun.x + x, sun.y + y, '#fff3b0')
+    }
+  }
+  // 바다: 수평선 쪽은 짙은 청록, 앞쪽은 밝은 청록. 가로 물결 무늬와 햇빛 반짝임
+  const SEA = ['#1d6fa5', '#2382b5', '#2b95c2', '#36a8c9', '#47b9cc']
+  for (let y = horizon; y < shore; y++) {
+    const t = ((y - horizon) / (shore - horizon)) * (SEA.length - 1)
+    for (let x = 0; x < w; x++) {
+      const wave = (x + y * 3) % 7 === 0 && rnd() < 0.7
+      px(x, y, wave ? '#e6f6fb' : SEA[Math.min(SEA.length - 1, Math.round(t))])
+    }
+  }
+  for (let y = horizon + 1; y < shore - 2; y++) {
+    if (rnd() < 0.6) px(sun.x + Math.round((rnd() - 0.5) * 6), y, '#fff3b0')
+  }
+  // 돛단배
+  const bx = Math.round(w * 0.35)
+  const by = horizon + 4
+  for (let x = -3; x <= 3; x++) px(bx + x, by, '#7a4a2a')
+  for (let x = -2; x <= 2; x++) px(bx + x, by + 1, '#7a4a2a')
+  for (let y = 1; y <= 6; y++) {
+    px(bx, by - y, '#5a3a22')
+    for (let x = 1; x <= Math.round((6 - y) * 0.6) + 1; x++) px(bx + x, by - y, '#ffffff')
+  }
+  // 파도 거품 줄과 모래사장
+  for (let x = 0; x < w; x++) {
+    px(x, shore, rnd() < 0.8 ? '#ffffff' : '#d8f1f6')
+    for (let y = shore + 1; y < h; y++) px(x, y, rnd() < 0.15 ? '#e0c48f' : '#f0d9a6')
+  }
+  const tex = new CanvasTexture(cv)
+  tex.colorSpace = SRGBColorSpace
+  tex.magFilter = NearestFilter
+  tex.minFilter = NearestFilter
+  tex.generateMipmaps = false
+  return tex
+}
+
+function skylineTexture(aspect: number) {
+  const h = 30
+  const w = Math.round(h * aspect)
+  const cv = document.createElement('canvas')
+  cv.width = w
+  cv.height = h
+  const g = cv.getContext('2d')!
+  let seed = 20240419
+  const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32
+  const px = (x: number, y: number, c: string) => {
+    g.fillStyle = c
+    g.fillRect(x, y, 1, 1)
+  }
+  // 하늘: 위는 짙은 갈색, 지평선으로 갈수록 밝은 세피아. 띠 경계는 점묘(디더)로 섞는다
+  const SKY = ['#6a4a32', '#7c5a3d', '#906b48', '#a47d55', '#b78f63', '#c8a171', '#d7b382', '#e3c494', '#ecd3a7']
+  const ground = h - 2
+  for (let y = 0; y < ground; y++) {
+    const t = (y / ground) * (SKY.length - 1)
+    const i = Math.floor(t)
+    for (let x = 0; x < w; x++) px(x, y, SKY[Math.min(SKY.length - 1, i + (rnd() < t - i ? 1 : 0))])
+  }
+  // 낮게 걸린 흐릿한 해
+  const sun = { x: Math.round(w * 0.7), y: Math.round(h * 0.3), r: 3 }
+  for (let y = -sun.r; y <= sun.r; y++) {
+    for (let x = -sun.r; x <= sun.r; x++) {
+      const d = Math.hypot(x, y)
+      if (d <= sun.r) px(sun.x + x, sun.y + y, d < sun.r - 1 ? '#fff1cf' : '#f6ddb0')
+    }
+  }
+  // 건물 한 동: 벽돌 몸통 + 창문 격자(2칸 간격). 불 켜진 창은 lit 확률로
+  const tower = (x0: number, bw: number, top: number, body: string, win: string, dark: string, lit: number) => {
+    for (let y = top; y < ground; y++) for (let x = x0; x < x0 + bw; x++) px(x, y, body)
+    for (let y = top + 1; y < ground - 1; y += 2) {
+      for (let x = x0 + 1; x < x0 + bw - 1; x += 2) px(x, y, rnd() < lit ? win : dark)
+    }
+  }
+  // 뒷줄: 멀어서 흐린 높은 동들
+  for (let x = -1; x < w; ) {
+    const bw = 5 + Math.floor(rnd() * 3)
+    tower(x, bw, Math.round(h * (0.4 + rnd() * 0.12)), '#9a7351', '#c9a477', '#86613f', 0.45)
+    x += bw + 1 + Math.floor(rnd() * 2)
+  }
+  // 앞줄: 진한 벽돌 동들. 한 동 지붕에는 물탱크
+  let tank = false
+  for (let x = -2; x < w; ) {
+    const bw = 6 + Math.floor(rnd() * 4)
+    const top = Math.round(h * (0.52 + rnd() * 0.16))
+    tower(x, bw, top, '#4a3121', '#f2d398', '#36241a', 0.35)
+    if (!tank && x > 2 && x + bw < w - 2) {
+      const tx = x + Math.floor(bw / 2) - 1
+      for (let y = top - 4; y < top - 1; y++) for (let k = 0; k < 3; k++) px(tx + k, y, '#2f2017')
+      px(tx, top - 1, '#2f2017')
+      px(tx + 2, top - 1, '#2f2017')
+      tank = true
+    }
+    x += bw + Math.floor(rnd() * 2)
+  }
+  // 땅과 사진 같은 거친 입자
+  for (let y = ground; y < h; y++) for (let x = 0; x < w; x++) px(x, y, '#22170f')
+  const img = g.getImageData(0, 0, w, h)
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (rnd() - 0.5) * 12
+    for (let c = 0; c < 3; c++) img.data[i + c] = Math.max(0, Math.min(255, img.data[i + c] + n))
+  }
+  g.putImageData(img, 0, 0)
+  const tex = new CanvasTexture(cv)
+  tex.colorSpace = SRGBColorSpace
+  tex.magFilter = NearestFilter
+  tex.minFilter = NearestFilter
+  tex.generateMipmaps = false
+  return tex
+}
+
+export class OfficeScene {
+  private renderer: WebGLRenderer
+  private labelRenderer: CSS2DRenderer
+  private scene = new Scene()
+  private camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 200)
+  private target = new Vector3(W / 2, 0.3, D / 2)
+  private assets: OfficeAssets | null = null
+  private chars = new Map<string, Char>()
+  private zones: (string | null)[] = new Array(ZONE_COUNT).fill(null)
+  private zoneMats: MeshBasicMaterial[] = []
+  private zoneLabels: { el: HTMLElement; obj: CSS2DObject }[] = []
+  private teamRingMats = TEAM_COLORS.map(
+    (c) => new MeshBasicMaterial({ color: c, transparent: true, opacity: 0.85 }),
+  )
+  private teamDiscMats = TEAM_COLORS.map(
+    (c) => new MeshBasicMaterial({ color: c, transparent: true, opacity: 0.3 }),
+  )
+  /** 커피 컵: Kenney Furniture Kit 에 컵·머그 모델이 없어 작은 원통으로 대신한다(캐릭터 모델 좌표 크기) */
+  private cupGeo = new CylinderGeometry(0.04, 0.032, 0.08, 14)
+  private cupMat = new MeshStandardMaterial({ color: '#f4efe6', roughness: 0.6 })
+  private ringGeo = new RingGeometry(0.2, 0.27, 40)
+  private discGeo = new CircleGeometry(0.27, 40)
+  /**
+   * 자리별 모니터 화면. planes 는 두 모니터의 내용 판(사람이 앉아 있을 때만 보인다), term 은 터미널 텍스처
+   * (이미지는 terminalBase 와 공유), scroll 은 스크롤한 줄 수다.
+   */
+  private screens = new Map<string, { planes: Mesh[]; term: Texture | null; scroll: number }>()
+  private designBase: Texture | null = null
+  private terminalBase: Texture | null = null
+  private designMat: MeshBasicMaterial | null = null
+  private screenGeo: PlaneGeometry | null = null
+  private screenIdleMat: MeshStandardMaterial | null = null
+  /** 방(바닥·벽·가구)의 월드 범위. 모델을 다 놓기 전에는 null 이고 대략값으로 맞춘다 */
+  private roomBox: Box3 | null = null
+  /** 구역별 의자 방석 재질(팀 색으로 바뀐다) */
+  private chairMats = new Map<number, MeshStandardMaterial>()
+  /** 자동 배정한 종류별 옷 색(clothesColorOf) */
+  private typeColors = new Map<string, string>()
+  /** 모니터 몸체 재질. 모든 모니터가 같은 색이라 하나를 나눠 쓴다 */
+  private monitorBody: MeshStandardMaterial | null = null
+  /** 큰 창 밖 풍경 캔버스. 1분마다(updateWindowViews) 지금 시각으로 다시 그린다 */
+  private windowViews: { canvas: HTMLCanvasElement; tex: Texture }[] = []
+  private viewMinute = -1
+  /** 방 조명(낮 밝기 기준). 밤이 될수록 줄여 램프 불빛이 드러나게 한다(updateDayNight) */
+  private roomLights: { hemi: HemisphereLight; amb: AmbientLight; sun: DirectionalLight } | null = null
+  /** 램프마다 갓 재질(밤에 빛남)과 갓 속 점광원 */
+  private lamps: { shade: MeshStandardMaterial; light: PointLight }[] = []
+  /** 북쪽 벽 TV 화면. 사용량·언어가 바뀌거나(tvDirty) 분이 바뀌면 다시 그린다 */
+  private tv: { canvas: HTMLCanvasElement; tex: Texture } | null = null
+  private usage: UsageInfo | null = null
+  private tvDirty = true
+  private tvMinute = -1
+  /** (모델 번호, 옷 색) 별 색상표 변형 */
+  private clothesTextures = new Map<string, CanvasTexture>()
+  /** 벽 액자의 텍스처·재질·지오메트리 */
+  private frameDisposables: { dispose(): void }[] = []
+  private raf = 0
+  private last = 0
+  private time = 0
+  private width = 1
+  private height = 1
+  private userZoom = 1
+  private destroyed = false
+  private pending: SessionInfo[] | null = null
+  /** 마지막 스냅샷의 서버 시각과, 그것을 받은 순간의 단조 시계. 스냅샷 사이(변화 없는 하트비트 구간)에는 단조 시계의 경과분만 더한다 */
+  private clock: { now: number; at: number } | null = null
+  private live = new Set<string>()
+  /** 일하는 세션에 구역을 내주려고 캐릭터를 내보내는 중인 세션. 다 나가면 구역을 비운다 */
+  private evicting = new Set<string>()
+  /** 마지막 스냅샷. 구역이 비면 이것으로 다시 배정한다(서버는 변화가 없으면 스냅샷을 보내지 않는다) */
+  private lastSessions: SessionInfo[] = []
+  private showProject = true
+  /** 이번 sync 에서 새로 들어온 인원 수 */
+  private spawned = 0
+  private wheelTarget: HTMLElement | null
+  private canvas: HTMLCanvasElement
+  /** 캐릭터를 고르면(이름표·몸 클릭) 그 키(`세션ID:main` · `세션ID:에이전트ID`), 빈 곳을 누르면 null */
+  onSelect: ((key: string | null) => void) | null = null
+  private selected: string | null = null
+  private onCanvasClick = (e: MouseEvent) => this.onSelect?.(this.charAt(e.clientX, e.clientY))
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    this.userZoom = Math.min(2.6, Math.max(0.6, this.userZoom * Math.exp(-e.deltaY * 0.0012)))
+    this.fit()
+  }
+
+  constructor(canvas: HTMLCanvasElement, layer: HTMLElement) {
+    this.renderer = new WebGLRenderer({ canvas, antialias: true })
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = PCFShadowMap
+    this.renderer.toneMapping = ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 1.05
+    this.scene.background = new Color('#2a2233')
+
+    this.labelRenderer = new CSS2DRenderer()
+    this.labelRenderer.domElement.style.position = 'absolute'
+    this.labelRenderer.domElement.style.inset = '0'
+    this.labelRenderer.domElement.style.pointerEvents = 'none'
+    layer.appendChild(this.labelRenderer.domElement)
+
+    // 아이소메트릭: 방위 45도, 고도 33도로 고정
+    const az = Math.PI / 4
+    const el = (33 * Math.PI) / 180
+    const dir = new Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el))
+    this.camera.position.copy(this.target).addScaledVector(dir, 60)
+    this.camera.lookAt(this.target)
+    this.camera.updateMatrixWorld(true)
+
+    this.initLights()
+    this.wheelTarget = canvas.parentElement
+    this.wheelTarget?.addEventListener('wheel', this.onWheel, { passive: false })
+    this.canvas = canvas
+    canvas.addEventListener('click', this.onCanvasClick)
+
+    const models = [...new Set([...LAYOUT.items.map((i) => i.model), 'books'])]
+    loadOfficeAssets(models)
+      .then((a) => {
+        if (this.destroyed) return
+        this.assets = a
+        this.build()
+        if (this.pending) this.sync(this.pending)
+      })
+      .catch((e) => console.error('[agent-office] failed to load 3D models', e))
+  }
+
+  private initLights() {
+    const hemi = new HemisphereLight('#fff3dc', '#7a5a45', 1.15)
+    const amb = new AmbientLight('#ffe9cc', 0.35)
+    this.scene.add(hemi, amb)
+    const sun = new DirectionalLight('#ffe2b4', 2.6)
+    this.roomLights = { hemi, amb, sun }
+    sun.position.copy(this.target).add(new Vector3(5.5, 11, 3.5))
+    sun.target.position.copy(this.target)
+    sun.castShadow = true
+    sun.shadow.mapSize.set(2048, 2048)
+    const cam = sun.shadow.camera
+    cam.left = -9
+    cam.right = 9
+    cam.top = 9
+    cam.bottom = -9
+    cam.near = 1
+    cam.far = 40
+    sun.shadow.bias = -0.0004
+    sun.shadow.normalBias = 0.03
+    sun.shadow.radius = 3
+    this.scene.add(sun, sun.target)
+  }
+
+  // ───────────────────────── 장면 구성 ─────────────────────────
+
+  private build() {
+    const a = this.assets!
+    // 바닥
+    const tex = woodTexture()
+    tex.repeat.set(W / FLOOR_TILE, D / FLOOR_TILE)
+    const floor = new Mesh(
+      new PlaneGeometry(W, D),
+      new MeshStandardMaterial({ map: tex, roughness: 0.85 }),
+    )
+    floor.rotation.x = -Math.PI / 2
+    floor.position.set(W / 2, 0, D / 2)
+    floor.receiveShadow = true
+    this.scene.add(floor)
+
+    // 팀 구역 바닥(세션이 배정되면 팀 색)
+    for (let z = 0; z < ZONE_COUNT; z++) {
+      const o = ZONE_ORIGIN[z]
+      const mat = new MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.08 })
+      const mesh = new Mesh(new PlaneGeometry(ZONE_SIZE.w, ZONE_SIZE.d), mat)
+      mesh.rotation.x = -Math.PI / 2
+      mesh.position.set(o.x + 1.65, 0.008, o.z + 1.05)
+      this.scene.add(mesh)
+      this.zoneMats.push(mat)
+
+      const el = document.createElement('div')
+      el.className = 'ao-zone'
+      el.style.setProperty('--team', TEAM_COLORS[z])
+      el.style.display = 'none'
+      const obj = new CSS2DObject(el)
+      obj.center.set(0.5, 0.5)
+      obj.position.set(o.x + 1.65, 0.05, o.z + 2.72)
+      this.scene.add(obj)
+      this.zoneLabels.push({ el, obj })
+    }
+
+    // 벽 색
+    for (const name of WALL_MODELS) {
+      a.furniture.get(name)?.root.traverse((o) => {
+        const m = (o as Mesh).material as Material | undefined
+        if (m && (m as MeshStandardMaterial).name === '_defaultMat') {
+          const c = (m as MeshStandardMaterial).clone()
+          c.color.copy(WALL_COLOR)
+          ;(o as Mesh).material = c
+        }
+      })
+    }
+    // 창문 유리: 원래는 반투명 회녹색이라 바깥의 어두운 배경이 비쳐 칙칙하다. 덜 비치는 하늘빛 파랑으로 은은하게 빛나게 한다
+    a.furniture.get('wallWindow')?.root.traverse((o) => {
+      const m = (o as Mesh).material as MeshStandardMaterial | undefined
+      if (m?.name !== 'glass') return
+      const c = m.clone()
+      c.color.set(WINDOW_GLASS)
+      c.opacity = 0.92
+      c.emissive = new Color(WINDOW_GLASS)
+      c.emissiveIntensity = 0.35
+      ;(o as Mesh).material = c
+    })
+    // 소파 천과 러그. 모델마다 따로 읽은 재질이라 같은 재질 이름('carpet')이어도 서로 번지지 않는다
+    for (const name of SOFA_MODELS) {
+      a.furniture.get(name)?.root.traverse((o) => {
+        const m = (o as Mesh).material as MeshStandardMaterial | undefined
+        if (m?.name === 'carpet') {
+          const c = m.clone()
+          c.color.copy(SOFA_COLOR)
+          c.roughness = SOFA_ROUGHNESS
+          ;(o as Mesh).material = c
+        }
+      })
+    }
+    a.furniture.get('rugRound')?.root.traverse((o) => {
+      const m = (o as Mesh).material as MeshStandardMaterial | undefined
+      const color = m && RUG_COLORS[m.name]
+      if (color) {
+        const c = m.clone()
+        c.color.copy(color)
+        ;(o as Mesh).material = c
+      }
+    })
+
+    for (const it of LAYOUT.items) this.placeItem(it)
+    this.placeWallCorner()
+    this.placeShelfBooks()
+    this.placeTrophies()
+    this.placeEspresso()
+    this.placeTv()
+    for (const f of LAYOUT.frames) this.placeFrame(f)
+    for (const w of LAYOUT.windows) this.placeWindow(w)
+    // 캐릭터가 들어오기 전, 바닥·벽·가구만 있을 때 방의 실제 범위(벽 두께 포함)를 재 화면 맞춤에 쓴다
+    this.roomBox = new Box3().setFromObject(this.scene)
+    this.fit()
+  }
+
+  /**
+   * 북쪽(문 쪽)·서쪽(창문 쪽) 벽이 만나는 모서리 기둥. 벽 조각은 방 안쪽 면(x=0, z=0)에 맞춰 바깥으로 두께만큼 놓이므로
+   * 모서리 바깥의 두께×두께 자리가 비어 위에서 보면 홈처럼 패여 보인다. 같은 두께·높이·색의 기둥으로 메운다.
+   */
+  private placeWallCorner() {
+    const wall = this.assets!.furniture.get('wall')
+    if (!wall) return
+    let mat: Material | null = null
+    wall.root.traverse((o) => {
+      const m = (o as Mesh).material as MeshStandardMaterial | undefined
+      if (!mat && m?.color?.equals(WALL_COLOR)) mat = m
+    })
+    if (!mat) return
+    const t = wall.size.z
+    const height = wall.size.y * WALL_SY
+    const geo = new BoxGeometry(t, height, t)
+    this.frameDisposables.push(geo)
+    const post = new Mesh(geo, mat)
+    post.position.set(-t / 2, height / 2, -t / 2)
+    post.castShadow = true
+    post.receiveShadow = true
+    this.scene.add(post)
+  }
+
+  /**
+   * 탕비실 에스프레소 머신. 가구 모음에 커피머신 모델이 하나뿐이라 카페형 머신을 도형으로 만든다:
+   * 흰색 몸체 + 위 컵 데우는 판(은색 테 + 작은 컵 둘) + 앞쪽 은색 그룹헤드와 검은 손잡이 포터필터 + 물받이 + 에스프레소 잔.
+   * 크기는 가로 0.34 · 높이 0.36 · 깊이 0.3 쯤(상판 위). 앞면이 +z(방 안쪽)다
+   */
+  private placeEspresso() {
+    const { x, y, z } = LAYOUT.espresso
+    const body = new MeshStandardMaterial({ color: '#f3f1ec', roughness: 0.35 })
+    const steel = new MeshStandardMaterial({ color: '#c9ced4', metalness: 0.4, roughness: 0.3 })
+    const dark = new MeshStandardMaterial({ color: '#2b2b2e', roughness: 0.6 })
+    const red = new MeshStandardMaterial({ color: '#c0392b', roughness: 0.5 })
+    const cupMat = new MeshStandardMaterial({ color: '#f4efe6', roughness: 0.6 })
+    const coffee = new MeshStandardMaterial({ color: '#4a2c1c', roughness: 0.4 })
+    const g = new Group()
+    const box = (w: number, h: number, d: number, mat: Material, px: number, py: number, pz: number) => {
+      const geo = new BoxGeometry(w, h, d)
+      this.frameDisposables.push(geo)
+      const m = new Mesh(geo, mat)
+      m.position.set(px, py + h / 2, pz)
+      g.add(m)
+      return m
+    }
+    const cyl = (rt: number, rb: number, h: number, mat: Material, px: number, py: number, pz: number) => {
+      const geo = new CylinderGeometry(rt, rb, h, 16)
+      this.frameDisposables.push(geo)
+      const m = new Mesh(geo, mat)
+      m.position.set(px, py + h / 2, pz)
+      g.add(m)
+      return m
+    }
+    this.frameDisposables.push(body, steel, dark, red, cupMat, coffee)
+    box(0.34, 0.03, 0.3, body, 0, 0, 0) // 받침
+    box(0.34, 0.3, 0.22, body, 0, 0.03, -0.04) // 몸체(뒤쪽)
+    box(0.34, 0.012, 0.22, steel, 0, 0.33, -0.04) // 컵 데우는 판 테
+    box(0.3, 0.035, 0.08, body, 0, 0.19, 0.1) // 앞으로 나온 그룹헤드 받침
+    cyl(0.032, 0.028, 0.03, steel, 0, 0.16, 0.11) // 그룹헤드
+    cyl(0.03, 0.03, 0.02, dark, 0, 0.14, 0.11) // 포터필터 바스켓
+    const handle = box(0.022, 0.018, 0.12, dark, 0, 0.142, 0.19) // 포터필터 손잡이
+    handle.rotation.x = 0.15
+    box(0.26, 0.012, 0.09, steel, 0, 0.03, 0.1) // 물받이
+    box(0.03, 0.012, 0.012, red, 0.12, 0.27, 0.075) // 빨간 스위치
+    cyl(0.018, 0.014, 0.03, cupMat, 0, 0.042, 0.11) // 에스프레소 잔
+    cyl(0.016, 0.016, 0.002, coffee, 0, 0.069, 0.11)
+    cyl(0.017, 0.013, 0.026, cupMat, -0.09, 0.342, -0.06) // 위에 엎어 둔 컵들
+    cyl(0.017, 0.013, 0.026, cupMat, 0.06, 0.342, -0.08)
+    g.position.set(x, y, z)
+    g.traverse((o) => ((o as Mesh).castShadow = true))
+    this.scene.add(g)
+  }
+
+  /**
+   * 트로피 진열장 선반의 트로피. Kenney 가구 모음에 트로피가 없어 받침대·기둥·컵·양쪽 손잡이를 도형으로 만든다.
+   * 높이 0.13(배율 1)이라 선반 간격(0.24)에 들어간다. 금속감은 환경 맵이 없어 금속도를 낮게 두고 색으로 낸다.
+   */
+  private placeTrophies() {
+    if (!LAYOUT.trophies.length) return
+    const base = new BoxGeometry(0.07, 0.02, 0.07)
+    base.translate(0, 0.01, 0)
+    const stem = new CylinderGeometry(0.008, 0.012, 0.035, 10)
+    stem.translate(0, 0.0375, 0)
+    const cup = new CylinderGeometry(0.034, 0.014, 0.05, 16)
+    cup.translate(0, 0.08, 0)
+    const handle = new TorusGeometry(0.016, 0.005, 6, 12, Math.PI)
+    const mats = {
+      gold: new MeshStandardMaterial({ color: '#e3b33c', metalness: 0.3, roughness: 0.35 }),
+      silver: new MeshStandardMaterial({ color: '#cfd5dc', metalness: 0.3, roughness: 0.3 }),
+      bronze: new MeshStandardMaterial({ color: '#c47a3c', metalness: 0.3, roughness: 0.4 }),
+    }
+    this.frameDisposables.push(base, stem, cup, handle, ...Object.values(mats))
+    for (const t of LAYOUT.trophies) {
+      const mat = mats[t.metal]
+      const g = new Group()
+      g.add(new Mesh(base, mat), new Mesh(stem, mat), new Mesh(cup, mat))
+      // 손잡이: 반원 고리를 컵 양옆에 세운다(왼쪽은 뒤집어 바깥을 향하게)
+      for (const side of [-1, 1]) {
+        const h = new Mesh(handle, mat)
+        h.position.set(side * 0.034, 0.083, 0)
+        h.rotation.z = side > 0 ? -Math.PI / 2 : Math.PI / 2
+        g.add(h)
+      }
+      g.position.set(t.x, t.y, t.z)
+      g.rotation.y = t.rot
+      g.scale.setScalar(t.s)
+      g.traverse((o) => ((o as Mesh).castShadow = true))
+      this.scene.add(g)
+    }
+  }
+
+  /**
+   * 책장 선반의 책. books 모델은 재질 4개짜리 메시 4개라 그대로 복제하면 책 한 묶음에 드로우콜 4개다.
+   * 메시마다 InstancedMesh 하나로 묶어(드로우콜 4개) 묶음별 색(instanceColor)만 달리한다.
+   * 이동 막힘(blocked)에 관여하지 않고 그림자도 드리우지 않는다.
+   */
+  private placeShelfBooks() {
+    const m = this.assets!.furniture.get('books')
+    const list = LAYOUT.shelfBooks
+    if (!m || !list.length) return
+    m.root.updateMatrixWorld(true)
+    const place = new Matrix4()
+    const inst = new Matrix4()
+    const tint = new Color()
+    m.root.traverse((o) => {
+      const src = o as Mesh
+      if (!src.isMesh) return
+      const mesh = new InstancedMesh(src.geometry, src.material, list.length)
+      list.forEach((b, i) => {
+        place
+          .makeRotationY(b.rot)
+          .scale(new Vector3(b.s, b.s, b.s))
+          .setPosition(b.x, b.y, b.z)
+        inst.multiplyMatrices(place, src.matrixWorld)
+        mesh.setMatrixAt(i, inst)
+        mesh.setColorAt(i, tint.set(b.tint))
+      })
+      mesh.castShadow = false
+      mesh.receiveShadow = true
+      mesh.frustumCulled = false
+      this.scene.add(mesh)
+    })
+  }
+
+  /**
+   * 벽면에 붙이는 큰 창: 하늘빛 유리판과 얇은 나무 창틀(위·아래·양옆, 아래는 창턱처럼 조금 더 두껍고 튀어나오게).
+   * 창틀 색은 벽 모델의 나무 재질(걸레받이)을 그대로 쓴다. 이동 막힘에는 넣지 않는 벽 장식이다
+   */
+  private placeWindow(w: WallWindow) {
+    let wood: Material | null = null
+    this.assets!.furniture.get('wall')?.root.traverse((o) => {
+      const m = (o as Mesh).material as MeshStandardMaterial | undefined
+      if (!wood && m?.name === 'wood') wood = m
+    })
+    const frameMat = wood ?? new MeshStandardMaterial({ color: '#e5b98a', roughness: 0.8 })
+    // 유리에는 창밖 풍경(windowView)을 그린다. 조명을 받지 않는 재질이라 실내 그림자와 상관없이 하늘 색 그대로 보인다
+    const view = document.createElement('canvas')
+    view.width = 768
+    view.height = Math.round((768 * (w.h - 0.07)) / (w.w - 0.07))
+    const viewTex = new CanvasTexture(view)
+    viewTex.colorSpace = SRGBColorSpace
+    this.windowViews.push({ canvas: view, tex: viewTex })
+    const glassMat = new MeshBasicMaterial({ map: viewTex, toneMapped: false })
+    this.frameDisposables.push(viewTex)
+    const bar = 0.035 // 창틀 두께
+    const depth = 0.03
+    const glassGeo = new PlaneGeometry(w.w - 2 * bar, w.h - 2 * bar)
+    const sideGeo = new BoxGeometry(bar, w.h, depth)
+    const topGeo = new BoxGeometry(w.w, bar, depth)
+    const sillGeo = new BoxGeometry(w.w + 0.06, bar * 1.4, depth * 2)
+    this.frameDisposables.push(glassMat, glassGeo, sideGeo, topGeo, sillGeo)
+    const g = new Group()
+    const glass = new Mesh(glassGeo, glassMat)
+    glass.position.z = 0.002
+    const left = new Mesh(sideGeo, frameMat)
+    left.position.set(-(w.w - bar) / 2, 0, depth / 2)
+    const right = new Mesh(sideGeo, frameMat)
+    right.position.set((w.w - bar) / 2, 0, depth / 2)
+    const top = new Mesh(topGeo, frameMat)
+    top.position.set(0, (w.h - bar) / 2, depth / 2)
+    const sill = new Mesh(sillGeo, frameMat)
+    sill.position.set(0, -(w.h - bar) / 2, depth)
+    for (const m of [left, right, top, sill]) m.castShadow = true
+    g.add(glass, left, right, top, sill)
+    // 로컬 +z(앞면)가 방 안쪽(+x)을 보게 돌린다. 벽면(x=0)에 붙인다
+    g.rotation.y = Math.PI / 2
+    g.position.set(0.004, w.y, w.z)
+    this.scene.add(g)
+  }
+
+  /**
+   * 북쪽 벽 TV: 광택 있는 검은 벽걸이 몸체(아래 베젤이 조금 두껍고 빨간 전원 LED), 화면에는 사용량(tvScreen)과
+   * 비스듬한 유리 반사광. 화면은 조명을 받지 않는 재질이라 늘 또렷하다. 벽 장식이라 이동 막힘에는 넣지 않는다
+   */
+  private placeTv() {
+    const { x, y, w, h } = LAYOUT.tv
+    const side = 0.022 // 양옆·위 베젤
+    const chin = 0.045 // 아래 베젤(LED 자리)
+    const sw = w - 2 * side
+    const sh = h - side - chin
+    const cv = document.createElement('canvas')
+    cv.width = 640
+    cv.height = Math.round((640 * sh) / sw)
+    const tex = new CanvasTexture(cv)
+    tex.colorSpace = SRGBColorSpace
+    tex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
+    // 화면 유리 반사광: 왼쪽 위에서 비스듬히 지나가는 옅은 흰 띠
+    const glare = document.createElement('canvas')
+    glare.width = 256
+    glare.height = 128
+    const gg = glare.getContext('2d')!
+    const band = gg.createLinearGradient(0, 0, 256, 128)
+    band.addColorStop(0, 'rgba(255,255,255,0.10)')
+    band.addColorStop(0.32, 'rgba(255,255,255,0.05)')
+    band.addColorStop(0.33, 'rgba(255,255,255,0)')
+    band.addColorStop(1, 'rgba(255,255,255,0)')
+    gg.fillStyle = band
+    gg.fillRect(0, 0, 256, 128)
+    const glareTex = new CanvasTexture(glare)
+    const bodyGeo = new BoxGeometry(w, h, 0.05)
+    const screenGeo = new PlaneGeometry(sw, sh)
+    const ledGeo = new BoxGeometry(0.018, 0.008, 0.004)
+    const bodyMat = new MeshStandardMaterial({ color: '#121317', roughness: 0.25, metalness: 0.5 })
+    const screenMat = new MeshBasicMaterial({ map: tex, toneMapped: false })
+    const glareMat = new MeshBasicMaterial({ map: glareTex, transparent: true, depthWrite: false, toneMapped: false })
+    const ledMat = new MeshBasicMaterial({ color: '#ff5a4a', toneMapped: false })
+    this.frameDisposables.push(tex, glareTex, bodyGeo, screenGeo, ledGeo, bodyMat, screenMat, glareMat, ledMat)
+    const g = new Group()
+    const body = new Mesh(bodyGeo, bodyMat)
+    body.castShadow = true
+    const screen = new Mesh(screenGeo, screenMat)
+    screen.position.set(0, (chin - side) / 2, 0.0255)
+    const glass = new Mesh(screenGeo, glareMat)
+    glass.position.set(0, (chin - side) / 2, 0.027)
+    const led = new Mesh(ledGeo, ledMat)
+    led.position.set(w / 2 - 0.08, -h / 2 + chin / 2, 0.026)
+    g.add(body, screen, glass, led)
+    // 북쪽 벽 안쪽 면(z=0)에서 살짝 띄워 건다. 앞면(+z)이 방 안쪽이다
+    g.position.set(x, y, 0.035)
+    this.scene.add(g)
+    this.tv = { canvas: cv, tex }
+    this.tvDirty = true
+  }
+
+  /** 사용량·언어가 바뀌었거나 분이 바뀌면(시계·남은 시간) TV 화면을 다시 그린다 */
+  private updateTv() {
+    if (!this.tv) return
+    const now = Date.now()
+    const minute = Math.floor(now / 60_000)
+    if (!this.tvDirty && minute === this.tvMinute) return
+    this.tvDirty = false
+    this.tvMinute = minute
+    drawTvScreen(this.tv.canvas, this.usage, now, t())
+    this.tv.tex.needsUpdate = true
+  }
+
+  /**
+   * 창밖 풍경을 지금 시각으로 다시 그린다(분이 바뀔 때만). 주소에 `?hour=18.5` 처럼 시각을 주면 그 시각으로 고정한다(확인용)
+   */
+  private updateWindowViews() {
+    const now = new Date()
+    const minute = now.getHours() * 60 + now.getMinutes()
+    if (minute === this.viewMinute) return
+    this.viewMinute = minute
+    const fixed = Number(new URLSearchParams(location.search).get('hour'))
+    const hour = location.search.includes('hour=') && Number.isFinite(fixed) ? fixed : minute / 60
+    for (const v of this.windowViews) {
+      drawWindowView(v.canvas, hour)
+      v.tex.needsUpdate = true
+    }
+    this.updateDayNight(hour)
+  }
+
+  /** 밤 정도에 따라 방 조명을 줄이고 램프를 켠다. 한밤에도 사무실이 잘 보이게 방 조명은 절반 남짓까지만 줄인다 */
+  private updateDayNight(hour: number) {
+    const night = nightness(hour)
+    const r = this.roomLights
+    if (r) {
+      r.hemi.intensity = 1.15 * (1 - 0.4 * night)
+      r.amb.intensity = 0.35 * (1 - 0.3 * night)
+      r.sun.intensity = 2.6 * (1 - 0.6 * night)
+    }
+    for (const l of this.lamps) {
+      l.shade.emissiveIntensity = 1.4 * night
+      l.light.intensity = LAMP_POWER * night
+    }
+  }
+
+  /**
+   * 벽 액자. Kenney Furniture Kit 에 액자 모델이 없어 얇은 박스(짙은 남색 틀) + 종이 판 + 글자 판으로 만든다.
+   * 글자는 CanvasTexture 로 그려 붙인다. 벽 장식이라 이동 막힘(blocked)·items 에는 넣지 않고,
+   * 지오메트리·재질·텍스처는 frameDisposables 에 모아 destroy 에서 정리한다.
+   */
+  private placeFrame(f: WallFrame) {
+    const depth = 0.035
+    const border = 0.035
+    const matW = 0.02
+    const artW = f.w - 2 * (border + matW)
+    const artH = f.h - 2 * (border + matW)
+    const tex =
+      f.art === 'seaside'
+        ? seasideTexture(artW / artH)
+        : f.art === 'skyline'
+        ? skylineTexture(artW / artH)
+        : frameTexture(f.text, artW / artH, this.renderer.capabilities.getMaxAnisotropy())
+    // 그림 액자는 밝은 원목 틀(바다 그림·머스터드 소파와 어울리게), 글자 액자는 남색 틀
+    const woodMat = new MeshStandardMaterial({ color: f.art ? '#c9a06a' : '#1b2a4e', roughness: 0.6 })
+    const paperMat = new MeshBasicMaterial({ color: '#fffaf0', toneMapped: false })
+    // 조명·톤매핑에 어두워지지 않게 글자 판은 조명을 받지 않는 재질로 항상 또렷하게 보인다
+    const artMat = new MeshBasicMaterial({ map: tex, toneMapped: false })
+    const woodGeo = new BoxGeometry(f.w, f.h, depth)
+    const paperGeo = new PlaneGeometry(f.w - 2 * border, f.h - 2 * border)
+    const artGeo = new PlaneGeometry(artW, artH)
+    this.frameDisposables.push(tex, woodMat, paperMat, artMat, woodGeo, paperGeo, artGeo)
+    const group = new Group()
+    group.add(new Mesh(woodGeo, woodMat))
+    const paper = new Mesh(paperGeo, paperMat)
+    paper.position.z = depth / 2 + 0.001
+    const art = new Mesh(artGeo, artMat)
+    art.position.z = depth / 2 + 0.002
+    group.add(paper, art)
+    // 로컬 +z(앞면)가 방 안쪽(+x)을 보게 y 축으로 π/2 돌린다. 뒷면은 벽에서 0.005 띄운다
+    group.rotation.y = Math.PI / 2
+    group.position.set(0.005 + depth / 2, f.y, f.z)
+    this.scene.add(group)
+  }
+
+  private placeItem(it: Item) {
+    const m = this.assets!.furniture.get(it.model)
+    if (!m) return
+    const s = it.s ?? 1
+    const obj = m.root.clone(true)
+    obj.scale.set(it.sx ?? s, it.sy ?? s, it.sz ?? s)
+    const depth = m.size.z * (it.sz ?? s)
+    const isWall = WALL_MODELS.has(it.model)
+    let x = it.x
+    let z = it.z
+    // 벽 조각은 원래 모델의 벽면(z=0)을 방 경계에 맞춘다. 일반 벽(두께 0.05)과 창문·문 벽(창틀 포함 0.09)은
+    // 경계 상자가 달라, 상자 가운데로 맞추면 창문·문 조각의 벽면이 0.02 뒤로 물러나 조각 사이에 단차가 생긴다
+    const wallOffset = m.center.z * (it.sz ?? s)
+    if (it.wall === 'N') z = isWall ? wallOffset : 0.02 + depth / 2
+    if (it.wall === 'W') x = isWall ? wallOffset : 0.02 + depth / 2
+    obj.position.set(x, it.y ?? 0, z)
+    obj.rotation.y = it.rot ?? 0
+    const shadow = !NO_SHADOW.has(it.model)
+    obj.traverse((o) => {
+      const mesh = o as Mesh
+      if (!mesh.isMesh) return
+      mesh.castShadow = shadow
+      mesh.receiveShadow = true
+    })
+    if (it.screenOf) this.bindScreen(it.screenOf, it.screenKind ?? 'design', obj)
+    if (it.model === 'chairDesk' && it.zone !== undefined) this.bindChair(it.zone, obj)
+    if (it.model === 'coatRackStanding') this.hangClothes(obj)
+    if (it.model === 'rugDoormat') this.dressDoormat(obj)
+    if (it.model.startsWith('lamp')) this.wireLamp(obj, m.size.y)
+    this.scene.add(obj)
+  }
+
+  /**
+   * 옷걸이에 코트 두 벌과 모자를 건다. 모델 세트에 옷이 없어 도형으로 만든다(옷걸이 모델 좌표, 정규화 뒤 기둥이 원점).
+   * 고리는 높이 0.62(끝 0.122)·0.77(끝 0.10)에 ±x·±z 네 방향이다. 벽을 따라가는 ±x 고리에 코트를, 기둥 꼭대기에 모자를 얹는다
+   */
+  private hangClothes(rack: Object3D) {
+    const coat = (side: 1 | -1, hookY: number, hookR: number, color: string, len: number) => {
+      const mat = new MeshStandardMaterial({ color, roughness: 0.9 })
+      // 몸판: 위가 좁고 아래가 넓은 납작한 원뿔대. 어깨 쪽 위 끝이 고리 끝에 걸린다
+      const body = new CylinderGeometry(0.045, 0.07, len, 10)
+      body.scale(0.6, 1, 1)
+      const collar = new CylinderGeometry(0.02, 0.045, 0.04, 10)
+      collar.scale(0.6, 1, 1)
+      this.frameDisposables.push(mat, body, collar)
+      const g = new Group()
+      const b = new Mesh(body, mat)
+      b.position.y = -0.03 - len / 2
+      const c = new Mesh(collar, mat)
+      c.position.y = -0.02
+      g.add(b, c)
+      g.position.set(side * (hookR + 0.025), hookY, 0)
+      g.rotation.z = side * 0.06 // 고리에 걸려 살짝 바깥으로 벌어진다
+      g.traverse((o) => ((o as Mesh).castShadow = true))
+      rack.add(g)
+    }
+    coat(-1, 0.62, 0.122, '#b5835a', 0.34) // 카멜 코트
+    coat(1, 0.62, 0.122, '#2f3e5c', 0.3) // 남색 재킷
+    // 모자: 챙 + 둥근 머리
+    const hatMat = new MeshStandardMaterial({ color: '#3b3330', roughness: 0.85 })
+    const brim = new CylinderGeometry(0.07, 0.07, 0.008, 18)
+    const crown = new CylinderGeometry(0.038, 0.045, 0.05, 14)
+    this.frameDisposables.push(hatMat, brim, crown)
+    const hat = new Group()
+    const hb = new Mesh(brim, hatMat)
+    const hc = new Mesh(crown, hatMat)
+    hc.position.y = 0.029
+    hat.add(hb, hc)
+    hat.position.set(0.03, 0.775, 0.02)
+    hat.rotation.z = -0.12
+    hat.traverse((o) => ((o as Mesh).castShadow = true))
+    rack.add(hat)
+  }
+
+  /**
+   * 문 앞 매트 무늬: 검남색 테두리, 섬유 결이 보이는 짙은 남색 바탕(나무 바닥과 대비)에 작은 주황·크림 반짝임(네 갈래 별)을
+   * 엇갈린 격자로 반복한다. 반짝임은 특정 로고를 옮기지 않은 일반 도형이다.
+   * 매트 모델(0.429 x 0.237, 높이 0.01)은 단색이라 윗면에 같은 크기의 판을 덧대 그린다(매트 모델 좌표)
+   */
+  private dressDoormat(mat: Object3D) {
+    const w = 0.429
+    const d = 0.237
+    const cv = document.createElement('canvas')
+    cv.width = 512
+    cv.height = Math.round((512 * d) / w)
+    const g = cv.getContext('2d')!
+    const W = cv.width
+    const H = cv.height
+    g.fillStyle = '#1c2233'
+    g.fillRect(0, 0, W, H)
+    const m = 22
+    g.fillStyle = '#2f3a52'
+    g.fillRect(m, m, W - 2 * m, H - 2 * m)
+    // 섬유 결: 가는 세로줄을 밝기만 조금씩 달리해 긋는다
+    for (let x = m; x < W - m; x += 4) {
+      g.fillStyle = (x / 4) % 3 === 0 ? 'rgba(10,14,25,0.25)' : 'rgba(200,215,255,0.06)'
+      g.fillRect(x, m, 2, H - 2 * m)
+    }
+    // 네 갈래 별: 꼭짓점 사이를 안쪽으로 오목하게 이은 반짝임. 큰 별 하나와 양옆 작은 별 둘
+    const sparkle = (cx: number, cy: number, r: number, color: string) => {
+      const k = r * 0.22
+      g.beginPath()
+      g.moveTo(cx, cy - r)
+      g.quadraticCurveTo(cx + k, cy - k, cx + r, cy)
+      g.quadraticCurveTo(cx + k, cy + k, cx, cy + r)
+      g.quadraticCurveTo(cx - k, cy + k, cx - r, cy)
+      g.quadraticCurveTo(cx - k, cy - k, cx, cy - r)
+      g.closePath()
+      g.fillStyle = color
+      g.fill()
+    }
+    // 안쪽 칸을 가로 7줄 x 세로 3줄로 나누고, 홀수 줄은 반 칸 밀어 엇갈리게 한다. 두 가지 주황을 번갈아 쓴다
+    const cols = 7
+    const rows = 3
+    const cw = (W - 2 * m) / cols
+    const rh = (H - 2 * m) / rows
+    for (let r = 0; r < rows; r++) {
+      const shift = r % 2 ? cw / 2 : 0
+      for (let c = 0; c < cols + (r % 2 ? -1 : 0); c++) {
+        const cx = m + shift + (c + 0.5) * cw
+        const cy = m + (r + 0.5) * rh
+        sparkle(cx, cy, rh * 0.36, (r + c) % 2 ? '#f3d9b0' : '#f08a4b')
+      }
+    }
+    const tex = new CanvasTexture(cv)
+    tex.colorSpace = SRGBColorSpace
+    tex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
+    const geo = new PlaneGeometry(w, d)
+    const material = new MeshStandardMaterial({ map: tex, roughness: 0.95 })
+    this.frameDisposables.push(tex, geo, material)
+    const top = new Mesh(geo, material)
+    top.rotation.x = -Math.PI / 2
+    top.position.y = 0.0102
+    top.receiveShadow = true
+    mat.add(top)
+  }
+
+  /**
+   * 램프: 갓('lamp' 재질)을 램프마다 복제해 밤에 따뜻하게 빛나게 하고, 갓 높이에 점광원을 둬 주변 벽·바닥에 불빛이 번지게 한다.
+   * 낮에는 꺼져 있다(updateDayNight 가 밤 정도로 세기를 정한다). 그림자는 그리지 않는다(가볍게)
+   */
+  private wireLamp(obj: Object3D, height: number) {
+    let shade: MeshStandardMaterial | null = null
+    obj.traverse((o) => {
+      const mesh = o as Mesh
+      if (!mesh.isMesh) return
+      const mat = mesh.material as MeshStandardMaterial
+      if (mat.name !== 'lamp') return
+      shade ??= Object.assign(mat.clone(), { emissive: new Color(LAMP_GLOW), emissiveIntensity: 0 })
+      mesh.material = shade
+    })
+    if (!shade) return
+    const light = new PointLight(LAMP_GLOW, 0, 3.2, 1.6)
+    light.position.y = height * 0.82
+    obj.add(light)
+    this.lamps.push({ shade, light })
+  }
+
+  /** 의자 방석 재질을 구역 전용으로 복제해 팀 색을 입힌다 */
+  private bindChair(zone: number, obj: Object3D) {
+    obj.traverse((o) => {
+      const mesh = o as Mesh
+      if (!mesh.isMesh) return
+      const mat = mesh.material as MeshStandardMaterial
+      if (mat.name !== 'carpet') return
+      let c = this.chairMats.get(zone)
+      if (!c) {
+        c = mat.clone()
+        this.chairMats.set(zone, c)
+      }
+      mesh.material = c
+    })
+  }
+
+  /**
+   * 모니터에 화면 내용을 붙인다. 모델의 'metal' 은 앞(+z)을 보는 화면 면뿐이고, 'metalDark' 는 뒷판·테두리·받침대다.
+   * 화면 면은 빈자리용 파란 화면으로 칠하고, 그 위에 같은 기울기의 판을 덧대 디자인 화면이나 터미널을 그린다.
+   * 판은 사람이 앉아 있을 때만 보이고(updateScreens), 조명을 받지 않는 재질이라 화면처럼 늘 또렷하다.
+   */
+  private bindScreen(seatId: string, kind: 'design' | 'terminal', obj: Object3D) {
+    const aniso = this.renderer.capabilities.getMaxAnisotropy()
+    if (!this.screenGeo) {
+      const f = SCREEN_FACE
+      const geo = new PlaneGeometry(f.x1 - f.x0, Math.hypot(f.yTop - f.yBottom, f.zTop - f.zBottom))
+      // 위쪽이 뒤(-z)로 기운 화면 면과 같은 각도로 눕히고 그 가운데로 옮긴다. 면에서 아주 조금 띄워 겹침 깜빡임을 막는다
+      geo.rotateX(-Math.atan2(f.zBottom - f.zTop, f.yTop - f.yBottom))
+      geo.translate((f.x0 + f.x1) / 2, (f.yBottom + f.yTop) / 2, (f.zBottom + f.zTop) / 2 + 0.0015)
+      this.screenGeo = geo
+    }
+    obj.traverse((o) => {
+      const mesh = o as Mesh
+      if (!mesh.isMesh) return
+      const mat = mesh.material as MeshStandardMaterial
+      if (mat.name === 'metalDark') {
+        if (!this.monitorBody) {
+          this.monitorBody = mat.clone()
+          this.monitorBody.color.set(MONITOR_BODY)
+        }
+        mesh.material = this.monitorBody
+      } else if (mat.name === 'metal') {
+        if (!this.screenIdleMat) {
+          this.screenIdleMat = mat.clone()
+          this.screenIdleMat.color.set(SCREEN_IDLE_COLOR)
+          this.screenIdleMat.emissive = new Color(SCREEN_IDLE_COLOR)
+          this.screenIdleMat.emissiveIntensity = SCREEN_IDLE_GLOW
+        }
+        mesh.material = this.screenIdleMat
+        let screen = this.screens.get(seatId)
+        if (!screen) this.screens.set(seatId, (screen = { planes: [], term: null, scroll: 0 }))
+        let content: MeshBasicMaterial
+        if (kind === 'design') {
+          this.designBase ??= designTexture(aniso)
+          this.designMat ??= new MeshBasicMaterial({ map: this.designBase, toneMapped: false })
+          content = this.designMat
+        } else {
+          if (!this.terminalBase) {
+            // 원본은 재질에 직접 붙지 않으므로(자리마다 복제본을 쓴다) destroy 에서 따로 정리한다
+            this.terminalBase = terminalTexture(aniso)
+            this.frameDisposables.push(this.terminalBase)
+          }
+          const tex = this.terminalBase.clone()
+          tex.offset.y = 1 - tex.repeat.y // 맨 윗줄부터 보인다
+          screen.term = tex
+          content = new MeshBasicMaterial({ map: tex, toneMapped: false })
+        }
+        const plane = new Mesh(this.screenGeo!, content)
+        plane.visible = false
+        screen.planes.push(plane)
+        mesh.add(plane)
+      }
+    })
+  }
+
+  // ───────────────────────── 화면 크기·카메라 ─────────────────────────
+
+  resize(width: number, height: number) {
+    this.width = Math.max(1, Math.floor(width))
+    this.height = Math.max(1, Math.floor(height))
+    this.renderer.setSize(this.width, this.height, false)
+    this.labelRenderer.setSize(this.width, this.height)
+    this.fit()
+  }
+
+  /**
+   * 방의 가로 폭을 화면 폭에 딱 맞춰(좌우 여백 없이) 정사영 범위를 잡는다.
+   * 화면이 방보다 넓적하면 위쪽 벽 끝·아래쪽 바닥 끝이 조금 잘리고, 좁고 길면 위아래가 남는다.
+   */
+  private fit() {
+    const cam = this.camera
+    const right = new Vector3().setFromMatrixColumn(cam.matrixWorld, 0)
+    const up = new Vector3().setFromMatrixColumn(cam.matrixWorld, 1)
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+    const p = new Vector3()
+    const box = this.roomBox
+    for (const x of box ? [box.min.x, box.max.x] : [0, W]) {
+      for (const y of box ? [box.min.y, box.max.y] : [0, 1.5]) {
+        for (const z of box ? [box.min.z, box.max.z] : [-0.3, D]) {
+          p.set(x, y, z).sub(this.target)
+          const px = p.dot(right)
+          const py = p.dot(up)
+          minX = Math.min(minX, px)
+          maxX = Math.max(maxX, px)
+          minY = Math.min(minY, py)
+          maxY = Math.max(maxY, py)
+        }
+      }
+    }
+    const aspect = this.width / this.height
+    const viewH = (maxX - minX) / aspect / this.userZoom
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    cam.left = cx - (viewH * aspect) / 2
+    cam.right = cx + (viewH * aspect) / 2
+    cam.top = cy + viewH / 2
+    cam.bottom = cy - viewH / 2
+    cam.updateProjectionMatrix()
+  }
+
+  // ───────────────────────── 실행·정리 ─────────────────────────
+
+  start() {
+    if (this.raf || this.destroyed) return
+    this.last = performance.now()
+    const loop = (now: number) => {
+      const dt = Math.min(0.25, (now - this.last) / 1000)
+      this.last = now
+      this.time += dt
+      if (this.assets) {
+        this.update(dt)
+        this.updateScreens(dt)
+        this.updateWindowViews()
+        this.updateTv()
+      }
+      this.renderer.render(this.scene, this.camera)
+      this.labelRenderer.render(this.scene, this.camera)
+      this.raf = requestAnimationFrame(loop)
+    }
+    this.raf = requestAnimationFrame(loop)
+  }
+
+  stop() {
+    if (this.raf) cancelAnimationFrame(this.raf)
+    this.raf = 0
+  }
+
+  destroy() {
+    this.destroyed = true
+    this.stop()
+    this.wheelTarget?.removeEventListener('wheel', this.onWheel)
+    this.canvas.removeEventListener('click', this.onCanvasClick)
+    for (const ch of this.chars.values()) ch.mixer.stopAllAction()
+    this.chars.clear()
+    const disposed = new Set<unknown>()
+    const disposeTexture = (t: unknown) => {
+      if (t instanceof Texture && !disposed.has(t)) {
+        disposed.add(t)
+        t.dispose()
+      }
+    }
+    const disposeMaterial = (m: Material) => {
+      if (disposed.has(m)) return
+      disposed.add(m)
+      for (const v of Object.values(m)) disposeTexture(v)
+      m.dispose()
+    }
+    this.scene.traverse((o) => {
+      const mesh = o as Mesh
+      ;(o as SkinnedMesh).skeleton?.dispose()
+      if (mesh.geometry) mesh.geometry.dispose()
+      const mat = mesh.material as Material | Material[] | undefined
+      if (Array.isArray(mat)) mat.forEach(disposeMaterial)
+      else if (mat) disposeMaterial(mat)
+    })
+    for (const t of this.clothesTextures.values()) t.dispose()
+    this.clothesTextures.clear()
+    for (const d of this.frameDisposables) d.dispose()
+    this.frameDisposables = []
+    for (const m of [...this.teamRingMats, ...this.teamDiscMats]) m.dispose()
+    this.cupGeo.dispose()
+    this.cupMat.dispose()
+    this.ringGeo.dispose()
+    this.discGeo.dispose()
+    // 원본 모델이 가진 지오메트리·재질(씬에 복제본을 넣었으므로 공유분)도 함께 정리한다
+    this.assets?.furniture.forEach((f) =>
+      f.root.traverse((o) => {
+        const mesh = o as Mesh
+        mesh.geometry?.dispose()
+        const mat = mesh.material as Material | Material[] | undefined
+        if (Array.isArray(mat)) mat.forEach(disposeMaterial)
+        else if (mat) disposeMaterial(mat)
+      }),
+    )
+    this.assets?.characters.forEach((c) =>
+      c.root.traverse((o) => {
+        const mesh = o as Mesh
+        mesh.geometry?.dispose()
+        const mat = mesh.material as Material | Material[] | undefined
+        if (Array.isArray(mat)) mat.forEach(disposeMaterial)
+        else if (mat) disposeMaterial(mat)
+      }),
+    )
+    this.scene.clear()
+    this.labelRenderer.domElement.remove()
+    this.renderer.dispose()
+    this.renderer.forceContextLoss()
+    releaseOfficeAssets()
+  }
+
+  // ───────────────────────── 세션 반영 ─────────────────────────
+
+  /** now 는 스냅샷의 서버 시각(ms). 대기 경과 시간은 이 값과 lastAt 의 차이로만 잰다 */
+  sync(sessions: SessionInfo[], now?: number) {
+    if (now !== undefined) this.clock = { now, at: performance.now() }
+    if (!this.assets) {
+      this.pending = sessions
+      return
+    }
+    this.pending = null
+    this.spawned = 0
+    this.lastSessions = sessions
+    const live = new Map<string, SessionInfo>()
+    for (const s of sessions) {
+      if (s.main.state !== 'ended' || s.agents.some((a) => a.state !== 'ended')) live.set(s.id, s)
+    }
+    this.live = new Set(live.keys())
+    // 끝난 세션은 비켜 세울 필요가 없다(그냥 나간다)
+    for (const id of this.evicting) if (!live.has(id)) this.evicting.delete(id)
+    const plan = planZones(this.zones, [...live.values()], this.evicting)
+    this.zones = plan.zones
+    for (const id of plan.evict) this.evicting.add(id)
+
+    const wanted = new Set<string>()
+    for (const s of live.values()) {
+      const zone = this.zones.indexOf(s.id)
+      if (zone < 0 || this.evicting.has(s.id)) continue
+      if (s.main.state !== 'ended') {
+        wanted.add(`${s.id}:main`)
+        this.upsert(`${s.id}:main`, s.id, zone, 'main', mainTitle(s), s.main, true)
+        this.chars.get(`${s.id}:main`)!.spawning = spawningAgent(s)
+      }
+      for (const a of s.agents) {
+        if (a.state === 'ended') continue
+        wanted.add(`${s.id}:${a.id}`)
+        this.upsert(
+          `${s.id}:${a.id}`,
+          s.id,
+          zone,
+          a.agentType,
+          a.description || agentLabel(a.agentType),
+          a,
+          false,
+        )
+      }
+      const sid = t().session(s.id.slice(0, 6))
+      this.zoneLabels[zone].el.textContent = this.showProject ? `${s.project} · ${sid}` : sid
+    }
+    for (const ch of this.chars.values()) {
+      if (!wanted.has(ch.key)) ch.leaving = true
+    }
+  }
+
+  /** 서버 시각 기준 현재. 서버는 변화가 없으면 스냅샷을 다시 보내지 않으므로 받은 뒤 흐른 시간을 더한다 */
+  private serverNow() {
+    return this.clock ? this.clock.now + (performance.now() - this.clock.at) : null
+  }
+
+  private seatFor(zone: number, type: string, isMain: boolean): Seat | null {
+    const taken = new Set(
+      [...this.chars.values()].filter((c) => !c.removed && c.seat).map((c) => c.seat!.id),
+    )
+    const local = isMain ? SEAT_OF_TYPE.main : (SEAT_OF_TYPE[type] ?? SEAT_OTHER)
+    const mine = LAYOUT.seats.filter((s) => s.zone === zone)
+    const pref = mine.find((s) => s.local === local)
+    if (pref && !taken.has(pref.id)) return pref
+    return mine.find((s) => !taken.has(s.id)) ?? null
+  }
+
+  private makeChar(
+    zone: number,
+    type: string,
+    isMain: boolean,
+    variant: number,
+  ): Pick<
+    Char,
+    | 'holder'
+    | 'ring'
+    | 'mixer'
+    | 'clips'
+    | 'label'
+    | 'tagEl'
+    | 'textEl'
+    | 'labelEl'
+    | 'bubbleEl'
+    | 'dotsEl'
+    | 'nameTextEl'
+  > {
+    const a = this.assets!
+    const modelIdx = charIndexOf(type, isMain, variant)
+    const def = a.characters[modelIdx]
+    const model = cloneSkinned(def.root)
+    model.scale.setScalar(CHAR_SCALE)
+    const clothes = this.clothesTexture(modelIdx, this.clothesColorOf(type, isMain))
+    model.traverse((o) => {
+      const mesh = o as Mesh
+      if (mesh.isMesh) {
+        // 몸통만 옷 색을 바꾼다. 재질은 원본을 복제해서 바꾼다(공유 재질을 바꾸면 다른 캐릭터도 같이 변한다)
+        if (mesh.name === 'body-mesh') {
+          const m = (mesh.material as MeshStandardMaterial).clone()
+          m.map = clothes
+          mesh.material = m
+        }
+        mesh.castShadow = true
+        mesh.receiveShadow = false
+        mesh.frustumCulled = false
+      }
+    })
+    const holder = new Group()
+    holder.add(model)
+    this.scene.add(holder)
+
+    // 팀 색 발밑 링
+    const ring = new Group()
+    const r = new Mesh(this.ringGeo, this.teamRingMats[zone])
+    const d = new Mesh(this.discGeo, this.teamDiscMats[zone])
+    r.rotation.x = d.rotation.x = -Math.PI / 2
+    ring.add(d, r)
+    ring.position.y = 0.012
+    this.scene.add(ring)
+
+    const labelEl = document.createElement('div')
+    labelEl.className = 'ao-stack'
+    labelEl.style.setProperty('--team', TEAM_COLORS[zone])
+    const tagEl = document.createElement('span')
+    tagEl.className = 'ao-tag'
+    const textEl = document.createElement('span')
+    textEl.className = 'ao-text'
+    // 세로 묶음(아래에서 위로): 머리 → 말풍선 → 이름표. 말풍선이 없으면 이름표가 머리 위로 내려온다
+    // 이름표: 세션 색 점 + agentType(메인은 '메인 Claude')
+    const nameEl = document.createElement('div')
+    nameEl.className = 'ao-label'
+    const dotEl = document.createElement('i')
+    dotEl.className = 'ao-dot'
+    dotEl.style.background = TEAM_COLORS[zone]
+    const agentEl = document.createElement('b')
+    agentEl.textContent = agentNameOf(type, isMain)
+    nameEl.append(dotEl, agentEl)
+    // 말풍선: 도구 칩 + 설명, 또는 응답 대기 점
+    const bubbleEl = document.createElement('div')
+    bubbleEl.className = 'ao-bubble'
+    const bubbleIn = document.createElement('span')
+    bubbleIn.className = 'ao-bubble-in'
+    const dotsEl = document.createElement('span')
+    dotsEl.className = 'ao-dots'
+    dotsEl.innerHTML = '<i></i><i></i><i></i>'
+    bubbleIn.append(tagEl, dotsEl, textEl) // 대기면 점만, 에이전트를 막 띄웠으면 칩 뒤에 점
+    bubbleEl.append(bubbleIn)
+    bubbleEl.style.display = 'none'
+    labelEl.append(nameEl, bubbleEl)
+    const label = new CSS2DObject(labelEl)
+    label.center = new Vector2(0.5, 1)
+    holder.add(label)
+
+    return {
+      holder,
+      ring,
+      mixer: new AnimationMixer(model),
+      clips: def.clips,
+      label,
+      tagEl,
+      textEl,
+      labelEl,
+      bubbleEl,
+      dotsEl,
+      nameTextEl: agentEl,
+    }
+  }
+
+  /**
+   * 색상표에서 그 모델의 옷 색 칸(견본 한 쌍 64x128)을 목표 색으로 다시 칠한 텍스처.
+   * 견본 안의 밝기 차(그라데이션)는 남겨 입체감을 유지한다.
+   */
+  private clothesTexture(modelIdx: number, hex: string) {
+    const k = `${modelIdx}:${hex}`
+    const hit = this.clothesTextures.get(k)
+    if (hit) return hit
+    const def = this.assets!.characters[modelIdx]
+    const img = def.colormap
+    const cv = document.createElement('canvas')
+    cv.width = img.width
+    cv.height = img.height
+    const g = cv.getContext('2d', { willReadFrequently: true })!
+    g.drawImage(img, 0, 0)
+    const cw = img.width / 16
+    const ch = img.height / 4
+    const x = Math.floor(def.clothesCell.col / 2) * 2 * cw
+    const y = def.clothesCell.row * ch
+    const data = g.getImageData(x, y, cw * 2, ch)
+    const px = data.data
+    const target = new Color(hex)
+    const tl = { h: 0, s: 0, l: 0 }
+    target.getHSL(tl)
+    let mean = 0
+    for (let i = 0; i < px.length; i += 4)
+      mean += (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255
+    mean /= px.length / 4
+    const c = new Color()
+    for (let i = 0; i < px.length; i += 4) {
+      const l0 = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255
+      const l = Math.min(0.9, Math.max(0.08, tl.l + (l0 - mean) * 0.9))
+      // 캔버스 픽셀은 sRGB 값이므로 sRGB 로 되돌려 쓴다
+      c.setHSL(tl.h, tl.s, l, SRGBColorSpace)
+      px[i] = Math.round(c.r * 255)
+      px[i + 1] = Math.round(c.g * 255)
+      px[i + 2] = Math.round(c.b * 255)
+    }
+    g.putImageData(data, x, y)
+    const tex = new CanvasTexture(cv)
+    tex.flipY = false
+    tex.colorSpace = SRGBColorSpace
+    tex.anisotropy = 4
+    this.clothesTextures.set(k, tex)
+    return tex
+  }
+
+  private upsert(
+    k: string,
+    session: string,
+    zone: number,
+    type: string,
+    title: string,
+    status: Status,
+    isMain: boolean,
+  ) {
+    let ch = this.chars.get(k)
+    if (!ch) {
+      const seat = this.seatFor(zone, type, isMain)
+      const typeKey = isMain ? 'main' : type
+      const variant = [...this.chars.values()].filter((c) => c.typeKey === typeKey).length
+      const spots = LAYOUT.spots[zone]
+      ch = {
+        key: k,
+        session,
+        zone,
+        typeKey: isMain ? 'main' : type,
+        title,
+        isMain,
+        status,
+        act: actOf(status),
+        seat,
+        spot: seat ? null : spots[Math.floor(Math.random() * spots.length)],
+        x: DOOR.x,
+        z: DOOR.z,
+        yaw: 0,
+        targetYaw: 0,
+        path: [],
+        mode: 'stand',
+        goal: 'seat',
+        poi: null,
+        sitAt: null,
+        rest: null,
+        tea: null,
+        cup: null,
+        coffeeFirst: false,
+        idleTimer: rand(4, 9),
+        standTimer: 0,
+        leaving: false,
+        removed: false,
+        delay: this.spawned++ * 0.9,
+        playing: null,
+        actions: {},
+        shownText: '',
+        shownTag: '',
+        spawning: false,
+        ...this.makeChar(zone, type, isMain, variant),
+      }
+      ch.holder.visible = false
+      ch.ring.visible = false
+      ch.labelEl.addEventListener('click', () => this.onSelect?.(k))
+      ch.labelEl.classList.toggle('is-selected', k === this.selected)
+      this.chars.set(k, ch)
+      this.route(ch, seat ? 'seat' : 'spot')
+      this.play(ch, 'walk')
+    }
+    // meta.json 이 늦어 agentType 을 모른 채 들어온 서브는 이름을 알게 되면 이름표를 고친다(모델·자리는 그대로)
+    if (!isMain && type !== ch.typeKey) {
+      ch.typeKey = type
+      ch.nameTextEl.textContent = agentNameOf(type, false)
+    }
+    ch.status = status
+    ch.act = actOf(status)
+    ch.title = title
+    ch.leaving = false
+  }
+
+  /** 화면 언어가 바뀌면(i18n setLocale 뒤) 이름표·구역 표식을 새 언어로 다시 쓴다. 말풍선 칩은 매 프레임 따라간다 */
+  refreshLocale() {
+    for (const ch of this.chars.values()) ch.nameTextEl.textContent = agentNameOf(ch.typeKey, ch.isMain)
+    this.tvDirty = true
+    if (this.assets) this.sync(this.lastSessions)
+  }
+
+  /** 서버 스냅샷의 사용량. TV 화면에 그린다 */
+  setUsage(usage: UsageInfo | null) {
+    this.usage = usage
+    this.tvDirty = true
+  }
+
+  /** 구역 표식에 프로젝트 이름을 보일지(HUD 스위치) */
+  setShowProject(on: boolean) {
+    this.showProject = on
+    if (this.assets) this.sync(this.lastSessions)
+  }
+
+  /**
+   * 종류별 옷 색. 메인·AGENT_LOOKS 에 고정한 종류는 그 색이고, 나머지는 처음 나왔을 때 pickClothesColor 로 골라
+   * 이 화면이 열려 있는 동안 기억한다(같은 종류는 늘 같은 색, 다른 종류끼리는 겹치지 않게).
+   */
+  private clothesColorOf(type: string, isMain: boolean) {
+    if (isMain) return AGENT_LOOKS.main.color
+    const fixed = AGENT_LOOKS[type]?.color
+    if (fixed) return fixed
+    let c = this.typeColors.get(type)
+    if (!c) this.typeColors.set(type, (c = pickClothesColor(type, new Set(this.typeColors.values()))))
+    return c
+  }
+
+  /** 캐릭터가 있는 구역의 팀 색 */
+  teamOf(key: string): string | null {
+    const ch = this.chars.get(key)
+    return ch ? TEAM_COLORS[ch.zone] : null
+  }
+
+  /** 고른 캐릭터의 이름표를 강조한다 */
+  select(key: string | null) {
+    this.selected = key
+    for (const ch of this.chars.values()) ch.labelEl.classList.toggle('is-selected', ch.key === key)
+  }
+
+  /** 화면 좌표(client)에서 가장 가까운 캐릭터. 몸 가운데를 화면에 투영해 반경 안에 있는 것만 고른다 */
+  private charAt(clientX: number, clientY: number): string | null {
+    const rect = this.canvas.getBoundingClientRect()
+    const p = new Vector3()
+    let best: string | null = null
+    let bestD = 40 // px
+    for (const ch of this.chars.values()) {
+      if (!ch.holder.visible || ch.removed) continue
+      p.set(ch.x, ch.holder.position.y + CHAR_HEIGHT / 2, ch.z).project(this.camera)
+      const x = rect.left + ((p.x + 1) / 2) * rect.width
+      const y = rect.top + ((1 - p.y) / 2) * rect.height
+      const d = Math.hypot(x - clientX, y - clientY)
+      if (d < bestD) {
+        bestD = d
+        best = ch.key
+      }
+    }
+    return best
+  }
+
+  // ───────────────────────── 이동 ─────────────────────────
+
+  private dest(ch: Char, goal: Goal): P2 & { yaw?: number; via?: P2 } {
+    if (goal === 'door') return { x: DOOR.x, z: DOOR.z }
+    if (goal === 'seat' && ch.seat) {
+      return {
+        x: ch.seat.x,
+        z: ch.seat.z,
+        yaw: SEAT_YAW,
+        via: { x: ch.seat.cx, z: ch.seat.cz },
+      }
+    }
+    if ((goal === 'poi' || goal === 'coffee') && ch.poi) {
+      return { x: ch.poi.x, z: ch.poi.z, yaw: ch.poi.yaw }
+    }
+    if (goal === 'lounge' && ch.rest) {
+      if (ch.rest.kind !== 'sit') {
+        return { x: ch.rest.poi.x, z: ch.rest.poi.z, yaw: ch.rest.poi.yaw }
+      }
+      const t = ch.rest.seat
+      return { x: t.x, z: t.z, yaw: t.yaw, via: { x: t.cx, z: t.cz } }
+    }
+    if (goal === 'tea' && ch.tea) {
+      const t = ch.tea
+      return { x: t.x, z: t.z, yaw: t.yaw, via: { x: t.cx, z: t.cz } }
+    }
+    if (ch.spot) return { x: ch.spot.x, z: ch.spot.z, yaw: Math.PI }
+    return { x: ch.x, z: ch.z }
+  }
+
+  /** 현재 위치에서 목표까지 길을 잡는다. 이미 도착해 있으면 바로 도착 처리 */
+  private route(ch: Char, goal: Goal) {
+    ch.goal = goal
+    if (goal !== 'coffee' && goal !== 'lounge') ch.rest = null
+    if (goal !== 'tea') ch.tea = null
+    const to = this.dest(ch, goal)
+    // 앉아 있던 사람은 먼저 의자(소파) 앞으로 빠져나온 뒤 길을 잡는다
+    const out = ch.mode === 'sit' && ch.sitAt ? { x: ch.sitAt.cx, z: ch.sitAt.cz } : null
+    const origin = out ?? { x: ch.x, z: ch.z }
+    const path = findPath(origin, to.via ?? to, LAYOUT.blocked)
+    if (path && (path.length || out || to.via)) {
+      if (to.via) {
+        // 의자 칸 중심까지 길을 잡고, 마지막에 앉는 자리로 들어간다
+        if (path.length) path[path.length - 1] = to.via
+        else path.push(to.via)
+        path.push({ x: to.x, z: to.z })
+      } else if (path.length) path[path.length - 1] = { x: to.x, z: to.z }
+      if (out) path.unshift(out)
+      ch.path = path
+      ch.mode = 'walk'
+    } else {
+      ch.path = []
+      if (!path) {
+        // 길이 없으면 곧장 그 자리로(막힌 배치 실수가 화면을 멈추지 않게)
+        ch.x = to.x
+        ch.z = to.z
+      }
+      this.arrive(ch)
+    }
+  }
+
+  private arrive(ch: Char) {
+    const to = this.dest(ch, ch.goal)
+    if (ch.goal === 'door') {
+      ch.removed = true
+    } else if (ch.goal === 'seat') {
+      ch.mode = 'sit'
+      ch.sitAt = ch.seat ? deskSit(ch.seat) : null
+      ch.targetYaw = SEAT_YAW
+      ch.idleTimer = rand(4, 9)
+    } else if (ch.goal === 'lounge' && ch.rest?.kind === 'sit') {
+      ch.mode = 'sit'
+      ch.sitAt = { ...ch.rest.seat, sofa: true }
+      ch.targetYaw = ch.rest.seat.yaw
+    } else if (ch.goal === 'tea' && ch.tea) {
+      // 티테이블 의자에 잠깐 앉았다가(stepSit 이 standTimer 로 잰다) 자리로 돌아간다
+      ch.mode = 'sit'
+      ch.sitAt = { ...ch.tea, sofa: true }
+      ch.targetYaw = ch.tea.yaw
+      ch.standTimer = rand(6, 12)
+    } else if (ch.goal === 'coffee') {
+      ch.mode = 'stand'
+      ch.targetYaw = to.yaw ?? ch.yaw
+      ch.standTimer = rand(2, 3.5)
+    } else if (ch.goal === 'lounge') {
+      ch.mode = 'stand'
+      ch.targetYaw = to.yaw ?? ch.yaw
+      ch.standTimer = 1e9
+    } else if (ch.goal === 'poi') {
+      ch.mode = 'stand'
+      ch.targetYaw = to.yaw ?? ch.yaw
+      ch.standTimer = rand(2.5, 5)
+    } else {
+      ch.mode = 'stand'
+      ch.targetYaw = to.yaw ?? ch.yaw
+      ch.standTimer = 1e9
+    }
+  }
+
+  /** 메인이 답변을 마치고 사용자 응답을 오래 기다리는 중인가(AskUserQuestion 대기는 tool 이 있어 제외) */
+  private isResting(ch: Char) {
+    if (!ch.isMain || MAIN_STAYS_SEATED) return false
+    const now = this.serverNow()
+    return now !== null && shouldRest(ch.status, now)
+  }
+
+  private wantedGoal(ch: Char): Goal {
+    if (ch.leaving) return 'door'
+    if (!ch.seat) return 'spot'
+    if (this.isResting(ch)) return ch.goal === 'coffee' ? 'coffee' : 'lounge'
+    if (ch.goal === 'poi' && ch.act === 'idle') return 'poi'
+    if (ch.goal === 'tea' && ch.act === 'idle') return 'tea'
+    return 'seat'
+  }
+
+  /** 서 있는 채 커피를 든 상태: 커피 머신에 잠깐 들렀거나(coffee), 앉을 자리가 없어 커피 자리에서 쉬는 중(lounge + coffee 자리) */
+  private isDrinking(ch: Char) {
+    if (ch.mode !== 'stand') return false
+    return ch.goal === 'coffee' || (ch.goal === 'lounge' && ch.rest?.kind === 'coffee')
+  }
+
+  /** 다른 캐릭터가 서 있거나 가는 중인 POI(커피 들름·배회 목적지·휴게 공간에서 서거나 커피 마시는 자리) */
+  private occupiedPois(self: Char): (Poi | null)[] {
+    const out: (Poi | null)[] = []
+    for (const c of this.chars.values()) {
+      if (c === self) continue
+      if (c.goal === 'poi' || c.goal === 'coffee') out.push(c.poi)
+      if (c.rest && c.rest.kind !== 'sit') out.push(c.rest.poi)
+    }
+    return out
+  }
+
+  /** 목적지를 want 로 바꾼다. 쉬러 가는 길이면 자리를 고르고(소파 우선) 커피 머신 들름 여부를 정한다 */
+  private go(ch: Char, want: Goal) {
+    if (want !== 'lounge' || ch.goal === 'coffee') {
+      this.route(ch, want)
+      return
+    }
+    if (!ch.rest) {
+      const taken = new Set<string>()
+      for (const c of this.chars.values()) if (c !== ch && c.rest) taken.add(c.rest.id)
+      ch.rest = pickRestSpot(taken)
+      ch.coffeeFirst = Math.random() < 0.5
+    }
+    // 소파·의자에 앉을 사람이 가는 길에 들르는 커피 머신. 다른 사람이 쉬는 자리로 잡았거나 서 있거나 가는 중인 자리는 피한다.
+    // 빈 커피 자리가 없으면 들르지 않고 바로 쉬는 자리로 간다
+    const free = freePois(LAYOUT.coffeePois, this.occupiedPois(ch))
+    if (ch.coffeeFirst && ch.rest.kind === 'sit' && free.length) {
+      ch.coffeeFirst = false
+      ch.poi = free[Math.floor(Math.random() * free.length)]
+      this.route(ch, 'coffee')
+    } else this.route(ch, 'lounge')
+  }
+
+  private update(dt: number) {
+    for (const ch of this.chars.values()) {
+      if (ch.delay > 0) {
+        ch.delay -= dt
+        continue
+      }
+      if (!ch.holder.visible) {
+        ch.holder.visible = true
+        ch.ring.visible = true
+      }
+      if (ch.mode === 'walk') this.stepWalk(ch, dt)
+      else if (ch.mode === 'sit') this.stepSit(ch, dt)
+      else this.stepStand(ch, dt)
+      this.applyPose(ch, dt)
+    }
+    for (const ch of [...this.chars.values()]) {
+      if (ch.removed) this.disposeChar(ch)
+    }
+    // 세션이 끝났거나 비켜 주는 중이고 캐릭터가 모두 나간 구역은 비운다. 비면 기다리는 세션을 바로 들인다
+    let freed = false
+    for (let z = 0; z < ZONE_COUNT; z++) {
+      const id = this.zones[z]
+      if (
+        id &&
+        (!this.live.has(id) || this.evicting.has(id)) &&
+        ![...this.chars.values()].some((c) => c.session === id)
+      ) {
+        this.zones[z] = null
+        this.evicting.delete(id)
+        freed = true
+      }
+      const used = this.zones[z] !== null
+      this.zoneLabels[z].el.style.display = used ? '' : 'none'
+      const mat = this.zoneMats[z]
+      mat.color.set(used ? TEAM_COLORS[z] : '#ffffff')
+      mat.opacity = used ? 0.42 : 0.07
+      this.chairMats.get(z)?.color.set(used ? TEAM_COLORS[z] : '#8a90a0')
+    }
+    if (freed) this.sync(this.lastSessions)
+  }
+
+  private disposeChar(ch: Char) {
+    ch.mixer.stopAllAction()
+    this.holdCup(ch, false)
+    this.scene.remove(ch.holder, ch.ring)
+    ch.labelEl.remove()
+    // 몸통 재질은 캐릭터별 복제본이라 여기서 해제한다. 지오메트리·색상표 텍스처는 공유하므로 destroy 에서 정리한다
+    ch.holder.traverse((o) => {
+      const mesh = o as Mesh
+      if (mesh.isMesh && mesh.name === 'body-mesh') (mesh.material as Material).dispose()
+      ;(o as SkinnedMesh).skeleton?.dispose()
+    })
+    this.chars.delete(ch.key)
+  }
+
+  private stepWalk(ch: Char, dt: number) {
+    const next = ch.path[0]
+    if (!next) {
+      this.arrive(ch)
+      return
+    }
+    const dx = next.x - ch.x
+    const dz = next.z - ch.z
+    const dist = Math.hypot(dx, dz)
+    const step = WALK_SPEED * dt
+    if (dist > 1e-4) ch.targetYaw = Math.atan2(dx, dz)
+    if (dist <= step) {
+      ch.x = next.x
+      ch.z = next.z
+      ch.path.shift()
+      if (ch.path.length === 0) {
+        this.arrive(ch)
+        return
+      }
+      // 칸 경계에서 목적지가 바뀌었는지 확인(배회 중 일이 생기면 자리로 돌아간다)
+      const want = this.wantedGoal(ch)
+      if (want !== ch.goal) this.go(ch, want)
+      return
+    }
+    ch.x += (dx / dist) * step
+    ch.z += (dz / dist) * step
+  }
+
+  private stepSit(ch: Char, dt: number) {
+    const want = this.wantedGoal(ch)
+    if (want !== ch.goal) {
+      this.go(ch, want)
+      return
+    }
+    if (ch.goal === 'tea') {
+      // 티테이블에서 잠깐 쉬다가 자리로 돌아간다(일이 생기면 위에서 바로 돌아간다)
+      ch.standTimer -= dt
+      if (ch.standTimer <= 0) this.route(ch, ch.seat ? 'seat' : 'spot')
+      return
+    }
+    // 한가하면 잠깐 돌아다닌다. 메인은 MAIN_STAYS_SEATED 면 자리를 지킨다
+    if (ch.goal === 'seat' && ch.act === 'idle' && !(ch.isMain && MAIN_STAYS_SEATED)) {
+      ch.idleTimer -= dt
+      if (ch.idleTimer <= 0) {
+        // 열에 넷은 빈 티테이블 의자에 앉으러 간다. 다른 캐릭터가 앉았거나 가는 중인 의자는 고르지 않는다
+        const takenTea = new Set([...this.chars.values()].filter((c) => c !== ch && c.tea).map((c) => c.tea!.id))
+        const freeTea = LAYOUT.teaSeats.filter((t) => !takenTea.has(t.id))
+        if (freeTea.length && Math.random() < 0.4) {
+          ch.tea = freeTea[Math.floor(Math.random() * freeTea.length)]
+          this.route(ch, 'tea')
+          return
+        }
+        // 다른 캐릭터가 서 있거나 가는 중인 자리는 피한다. 빈 자리가 없으면 잠시 뒤 다시 고른다
+        const free = freePois(LAYOUT.pois, this.occupiedPois(ch))
+        if (free.length) {
+          ch.poi = free[Math.floor(Math.random() * free.length)]
+          this.route(ch, 'poi')
+        } else ch.idleTimer = rand(2.5, 5)
+      }
+    }
+  }
+
+  private stepStand(ch: Char, dt: number) {
+    ch.standTimer -= dt
+    if (ch.leaving) {
+      if (ch.goal !== 'door') this.route(ch, 'door')
+      return
+    }
+    if (ch.goal === 'coffee') {
+      // 커피 머신에 잠깐 들렀다가 휴게 공간으로(그 사이 일이 생기면 자리로)
+      const want = this.wantedGoal(ch)
+      if (want === 'coffee' && ch.standTimer <= 0) this.route(ch, 'lounge')
+      else if (want !== 'coffee') this.go(ch, want)
+      return
+    }
+    if (ch.goal === 'poi') {
+      // 배회 중 잠깐 쉬다가(또는 일이 생기면) 자리로 돌아간다
+      if (ch.standTimer <= 0 || ch.act !== 'idle') this.route(ch, ch.seat ? 'seat' : 'spot')
+      return
+    }
+    const want = this.wantedGoal(ch)
+    if (want !== ch.goal) this.go(ch, want)
+  }
+
+  // ───────────────────────── 표시 ─────────────────────────
+
+  private play(ch: Char, name: ClipName) {
+    if (ch.playing === name) return
+    let next = ch.actions[name]
+    if (!next) {
+      next = ch.mixer.clipAction(ch.clips[name])
+      next.setLoop(LoopRepeat, Infinity)
+      ch.actions[name] = next
+    }
+    const prev = ch.playing ? ch.actions[ch.playing] : null
+    next.reset()
+    if (name === 'walk') next.timeScale = 2.2
+    // 응답 대기 고개 젓기(emote-no)는 원래 속도가 빨라 8분의 1 남짓으로 늦춘다
+    if (name === 'wait') next.timeScale = 0.12
+    next.time = Math.random() * 0.4
+    next.fadeIn(0.25).play()
+    prev?.fadeOut(0.25)
+    ch.playing = name
+  }
+
+  private clipFor(ch: Char): ClipName {
+    if (ch.mode === 'walk') return 'walk'
+    if (ch.mode === 'stand') return this.isDrinking(ch) ? 'coffee' : 'idle'
+    if (ch.sitAt?.sofa) return 'sit'
+    if (ch.act === 'type') return 'work'
+    if (ch.act === 'read') return 'read'
+    if (ch.act === 'wait') return 'wait'
+    return 'sit'
+  }
+
+  /** 커피 마시는 동안만 오른손 본에 컵을 붙이고, 그 밖에는 뗀다 */
+  private holdCup(ch: Char, on: boolean) {
+    if (on === (ch.cup !== null)) return
+    if (!on) {
+      ch.cup?.removeFromParent()
+      ch.cup = null
+      return
+    }
+    const hand = ch.holder.getObjectByName('arm-right')
+    if (!hand) return
+    const cup = new Mesh(this.cupGeo, this.cupMat)
+    cup.castShadow = true
+    cup.position.set(CUP_HAND.x, CUP_HAND.y, CUP_HAND.z)
+    hand.add(cup)
+    ch.cup = cup
+  }
+
+  private applyPose(ch: Char, dt: number) {
+    this.play(ch, this.clipFor(ch))
+    this.holdCup(ch, this.isDrinking(ch) && ch.playing === 'coffee')
+    ch.mixer.update(dt)
+    ch.yaw = turnToward(ch.yaw, ch.targetYaw, 9 * dt)
+    const sitting = ch.mode === 'sit'
+    const y = ch.holder.position.y
+    const lift = ch.sitAt ? liftOf(ch.sitAt.seatTop) : 0
+    const targetY = sitting ? lift : 0
+    ch.holder.position.set(ch.x, y + (targetY - y) * Math.min(1, dt * 10), ch.z)
+    ch.holder.rotation.y = ch.yaw
+    ch.ring.position.set(ch.x, 0.012, ch.z)
+
+    // 이름표·말풍선: 머리 위. holder 의 자식이라 holder 높이(보간 중 포함)를 빼서 월드 높이를 고정한다
+    const worldHead = sitting
+      ? lift + CHAR_SCALE * (MODEL_HEAD_TOP - SIT_ROOT_DROP) + 0.06
+      : CHAR_HEIGHT + 0.06
+    const head = worldHead - ch.holder.position.y
+    ch.label.position.set(0, head, 0)
+    ch.labelEl.style.opacity = ch.z < 0.2 ? '0' : '1'
+
+    // 말풍선: 일하는 중이면 도구 칩 + 설명, 응답 대기면 점만(칩 없음), act 가 idle(배회·자리에서 한가함)이면 없음. 단 응답 없음(멈춘 서브)은 빨간 칩을 띄운다. 휴게 공간(소파·의자·커피 자리)에서 쉬는 메인은 status 가 waiting 이라 act 가 wait 이므로 "…" 가 뜨는 것이 의도다
+    const waiting = ch.act === 'wait'
+    const stalled = isStalled(ch.status)
+    const working = ch.act === 'type' || ch.act === 'read' || stalled
+    ch.bubbleEl.style.display = waiting || working ? '' : 'none'
+    ch.labelEl.classList.toggle('is-wait', waiting)
+    ch.dotsEl.style.display = waiting || (working && ch.spawning) ? '' : 'none'
+    ch.tagEl.style.display = working ? '' : 'none'
+    const same = ch.title === agentNameOf(ch.typeKey, ch.isMain)
+    ch.textEl.style.display = working && !same ? '' : 'none'
+    const tag = toolText(ch.status)
+    if (tag !== ch.shownTag) {
+      ch.shownTag = tag
+      ch.tagEl.textContent = tag
+    }
+    ch.tagEl.dataset.kind = stalled
+      ? 'stall'
+      : !ch.status.tool
+        ? 'plain'
+        : ch.status.tool === 'Bash'
+          ? 'bash'
+          : ch.act
+    if (ch.title !== ch.shownText) {
+      ch.shownText = ch.title
+      ch.textEl.textContent = ch.title
+      ch.labelEl.title = ch.title
+    }
+  }
+
+  /**
+   * 사람이 앉아 있는 자리만 디자인 화면·터미널을 켜고, 빈자리는 파란 화면으로 둔다.
+   * 일하는 중이면 터미널을 스크롤한다(Bash 는 빠르게, 읽기 도구는 천천히). 대기 중이면 멈춘다.
+   */
+  private updateScreens(dt: number) {
+    for (const seat of LAYOUT.seats) {
+      const screen = this.screens.get(seat.id)
+      if (!screen) continue
+      // 자기 책상에 앉아 있을 때만(티테이블·소파에 앉아 있으면 빈자리로 본다)
+      const occ = [...this.chars.values()].find(
+        (c) => c.seat === seat && c.mode === 'sit' && c.goal === 'seat',
+      )
+      for (const p of screen.planes) p.visible = !!occ
+      const term = screen.term
+      const speed = !occ || !term
+        ? 0
+        : occ.status.tool === 'Bash' && occ.act === 'type'
+          ? TERM_SPEED.bash
+          : occ.act === 'type'
+            ? TERM_SPEED.type
+            : occ.act === 'read'
+              ? TERM_SPEED.read
+              : 0
+      if (!speed || !term) continue
+      const before = Math.floor(screen.scroll)
+      screen.scroll += dt * speed
+      const lines = Math.floor(screen.scroll)
+      if (lines === before) continue
+      // 줄 단위로 끊어 옮겨 터미널처럼 한 줄씩 올라가게 한다
+      const step = (lines % TERM_LINES) / TERM_LINES
+      term.offset.y = (((1 - term.repeat.y - step) % 1) + 1) % 1
+    }
+  }
+}
+

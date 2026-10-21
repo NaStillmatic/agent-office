@@ -1,0 +1,21 @@
+이 폴더의 3D 모델(characters/, furniture/)은 Kenney(https://kenney.nl)가 만든 에셋이다.
+라이선스: CC0 1.0 (Creative Commons Zero, https://creativecommons.org/publicdomain/zero/1.0/)
+출처 표기는 의무가 아니지만 밝혀 둔다.
+
+- furniture/  Furniture Kit 2.0      https://kenney.nl/assets/furniture-kit
+              (OpenGameArt: https://opengameart.org/content/furniture-kit)
+- characters/ Mini Characters 1.0    https://kenney.nl/assets/mini-characters
+              (OpenGameArt: https://opengameart.org/content/mini-character-1)
+
+필요한 모델만 골라 GLB 그대로 복사했다. 수정하지 않았다.
+
+---
+
+The 3D models in this folder (characters/, furniture/) were made by Kenney (https://kenney.nl).
+License: CC0 1.0 (Creative Commons Zero, https://creativecommons.org/publicdomain/zero/1.0/)
+Attribution is not required, but credited here anyway.
+
+- furniture/  Furniture Kit 2.0      https://kenney.nl/assets/furniture-kit
+- characters/ Mini Characters 1.0    https://kenney.nl/assets/mini-characters
+
+Only the models in use were copied as GLB files, unmodified.
