@@ -4,7 +4,7 @@
 
 # Agent Office
 
-**用 3D 办公室里的角色，展示 Claude Code 会话和子智能体此刻在做什么的本地仪表盘**
+**用 3D 办公室里的角色，展示 Claude Code 和 Codex 会话和子智能体此刻在做什么的本地仪表盘**
 
 主 Claude 在自己的办公桌前打字，你委派的子智能体在旁边的工位上工作，需要你回复时，它会在座位上冒出对话气泡。
 
@@ -15,7 +15,9 @@
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office 界面：四个会话各自在自己的区域工作，三个子智能体在主 Claude 旁边工作" width="900">
+<img src="docs/screenshot.png" alt="Agent Office 测试画面：可眺望首尔的办公室内显示四个会话和六个子智能体" width="900">
+
+<p><sub>画面使用模拟测试数据，显示四个会话和六个子智能体，不包含真实对话或项目信息。</sub></p>
 
 </div>
 
@@ -43,7 +45,7 @@
 ### 环境要求
 
 - [Node.js](https://nodejs.org) 22.12 或更高版本（22 LTS 或 24 及以上）
-- 正在使用 [Claude Code](https://docs.claude.com/en/docs/claude-code) 的电脑（从同一台电脑读取会话记录）
+- 正在使用 [Claude Code](https://docs.claude.com/en/docs/claude-code) 或 [Codex](https://openai.com/codex/) 的电脑（从同一台电脑读取会话记录）
 
 ### 安装与运行
 
@@ -79,7 +81,7 @@ npm run dev
 | 走出门 | 会话或智能体已结束 |
 
 - **名牌上的圆点、脚下的圆环和地板颜色**是会话（区域）的颜色，**衣服颜色**是智能体类型的颜色。
-- 大窗户外的景色会跟随电脑时钟，按黎明 → 早晨 → 白天 → 黄昏 → 夜晚变化。太阳和月亮会横穿窗户，夜里楼房的窗户会亮灯。傍晚起办公室灯光会稍微变暗，落地灯和台灯会亮起，在周围洒下温暖的光。在网址后加上 `?hour=18.5` 这样的时间，就能看到对应时刻的景色。
+- 后方两面玻璃窗外是南山、N首尔塔、城市与汉江的像素画全景，昼夜随电脑时钟切换。水面有细微闪光，船只轻轻摇晃。咖啡吧旁及工作区之间设有落地灯。傍晚室内略微变暗，灯具发出暖光。网址加上 `?hour=18.5` 可固定时间。
 - 每张办公桌都有双显示器。有人坐下时，左边显示设计工具，右边显示终端；空工位显示蓝屏。
 - 用**鼠标滚轮**缩放，右上角的按钮切换全屏。
 - **点击角色或名牌**打开详情卡片。点击空白处或按 `Esc` 关闭。
@@ -93,13 +95,15 @@ npm run dev
 flowchart LR
   CC["Claude Code<br/>(主会话 · 子智能体)"] -- 会话记录 jsonl --> FS[("~/.claude/projects")]
   FS -- "每秒只读取有变化的文件<br/>的末尾部分" --> P["Vite 插件<br/>server/plugin.ts"]
+  CX["Codex"] -- rollout jsonl --> CS[("~/.codex/sessions")]
+  CS --> P
   P -- 状态判定 --> A["server/analyze.ts"]
   P -- "SSE · 仅状态和工具名称" --> UI["浏览器<br/>Vue + three.js"]
 ```
 
-1. Claude Code 会为每个会话写入 `~/.claude/projects/<项目>/<会话ID>.jsonl`，为每个子智能体写入 `<会话ID>/subagents/agent-<ID>.jsonl` 和 `agent-<ID>.meta.json`（类型和说明）。
-2. 开发服务器上的插件只挑选最近 30 分钟内有修改的会话（以及当前打开着的会话），读取文件末尾，根据是否有等待结果的工具、回答是否结束来判定状态。没有变化的文件不会重复读取。
-3. 通过 Claude Code 为每个进程写入的 `~/.claude/sessions/<pid>.json` 确认会话是否仍然打开。
+1. Codex 读取 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`，可通过 `CODEX_HOME` 更改目录，并根据 `parent_thread_id` 关联父子会话。Claude Code 会为每个会话写入 `~/.claude/projects/<项目>/<会话ID>.jsonl`，为每个子智能体写入 `<会话ID>/subagents/agent-<ID>.jsonl` 和 `agent-<ID>.meta.json`（类型和说明）。
+2. 每 5 秒扫描全部会话文件，每秒检查已发现的近期文件是否变化并更新状态。新会话或长时间暂停后恢复的会话最多需要 5 秒才会显示。开发服务器上的插件只挑选最近 30 分钟内有修改的会话（以及当前打开着的会话），读取文件末尾，根据是否有等待结果的工具、回答是否结束来判定状态。没有变化的文件不会重复读取。Codex 的身份元数据也会缓存，文件被替换或重写时会更新缓存。
+3. Codex 根据任务开始、完成事件以及最后记录时间判断状态。通过 Claude Code 为每个进程写入的 `~/.claude/sessions/<pid>.json` 确认会话是否仍然打开。
 4. 只在状态发生变化时通过 SSE 推送到浏览器，浏览器根据快照绘制办公室。即使打开多个标签页，服务器也只用一个定时器读取一次。
 
 <details>
@@ -222,11 +226,13 @@ scripts/check-deps.mjs              在 npm run dev 之前检查依赖是否为�
 src/agent-office/scene.ts           three.js 场景 — 角色 · 移动 · 气泡 · 区域分配
 src/agent-office/layout.ts          办公室布局（纯数据）· 寻路
 src/agent-office/tvScreen.ts        墙上电视画面（用量仪表、时钟）
-src/agent-office/windowView.ts      窗外景色（按时间变化的天空、太阳、月亮与城市灯光）
+src/agent-office/exterior.ts        首尔昼夜全景、水面闪光与船只摇晃
+src/agent-office/windowView.ts      各时段天空颜色与夜间强度
 src/agent-office/assets.ts          GLB 加载器 · 动画片段合成（打字等）
 src/agent-office/office.config.ts   项目级设置
 src/agent-office/assets/            Kenney 3D 模型（CC0）
 server/plugin.ts                    Vite 插件 — 会话扫描 · SSE · 回环检查
+server/sessionFiles.ts              会话文件索引 — 每 5 秒扫描及近期文件检查
 server/analyze.ts                   状态判定纯函数
 ```
 

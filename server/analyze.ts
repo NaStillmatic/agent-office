@@ -10,7 +10,7 @@ export const MAIN_GONE_MS = 10 * 60 * 1000 // 이만큼 조용하면 메인도 �
  * 실측한 서브 도구 대기도 최장 10.0분이라 여유를 둔다. 서브를 다시 띄우는 도구(NESTED_TOOLS)는 제외.
  */
 export const STALL_MS = 12 * 60 * 1000
-const NESTED_TOOLS = new Set(['Agent', 'Task', 'Workflow'])
+const NESTED_TOOLS = new Set(['Agent', 'Task', 'Workflow', 'spawn_agent'])
 
 export type State = 'working' | 'waiting' | 'idle' | 'ended'
 export interface Status {
@@ -63,6 +63,58 @@ export interface Tail {
  */
 export function analyzeTail(text: string, mtimeMs: number, isMain: boolean, now: number): Status {
   return decideTail(parseTail(text), mtimeMs, isMain, now)
+}
+
+/** Codex rollout JSONL adapter. Keeps only tool names and turn lifecycle metadata. */
+export function parseCodexTail(text: string): Tail {
+  const tail: Tail = { evAt: 0, tool: null, handbackDone: false, lastKind: null }
+  const pending = new Map<string, string>()
+  let taskState: 'running' | 'complete' | null = null
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    try {
+      const event = JSON.parse(line)
+      if (!event || typeof event !== 'object') continue
+      const ts = typeof event.timestamp === 'string' ? Date.parse(event.timestamp) : NaN
+      if (!Number.isNaN(ts)) tail.evAt = Math.max(tail.evAt, ts)
+      const payload = event.payload
+      if (event.type === 'event_msg') {
+        if (payload?.type === 'task_started') {
+          taskState = 'running'
+          tail.lastKind = 'assistant-partial'
+        }
+        if (payload?.type === 'task_complete' || payload?.type === 'turn_aborted') {
+          taskState = 'complete'
+          tail.lastKind = 'assistant-text'
+          pending.clear()
+        }
+        if (payload?.type === 'user_message') {
+          taskState = 'running'
+          tail.lastKind = 'user'
+        }
+      }
+      if (event.type === 'response_item' && payload?.type === 'function_call') {
+        const id = typeof payload.call_id === 'string' ? payload.call_id : `call-${pending.size}`
+        const name = typeof payload.name === 'string' ? payload.name : 'Tool'
+        pending.set(id, name)
+        taskState = 'running'
+        tail.lastKind = 'assistant-tool'
+      }
+      if (event.type === 'response_item' && payload?.type === 'function_call_output') {
+        if (typeof payload.call_id === 'string') pending.delete(payload.call_id)
+        taskState = 'running'
+        tail.lastKind = 'assistant-partial'
+      }
+      if (event.type === 'response_item' && payload?.type === 'message' && payload.role === 'assistant') {
+        if (taskState !== 'complete') tail.lastKind = 'assistant-partial'
+      }
+    } catch {
+      // Ignore partial or malformed JSONL records.
+    }
+  }
+  tail.tool = pending.size ? Array.from(pending.values()).pop()! : null
+  if (taskState === 'complete') tail.lastKind = 'assistant-text'
+  return tail
 }
 
 /** 시각과 무관한 부분(줄 파싱)만 한다 */
@@ -156,7 +208,8 @@ export const SUPERVISE_TOOL = 'Agent'
  * AskUserQuestion 대기는 사용자가 답해야 하므로 그대로 둔다.
  */
 export function withAgents(main: Status, agents: readonly Status[]): Status {
-  if (main.state === 'working' || main.tool === 'AskUserQuestion') return main
+  const waitingOnAgent = ['spawn_agent', 'wait', 'send_input'].includes(main.tool ?? '')
+  if ((main.state === 'working' && !waitingOnAgent) || main.tool === 'AskUserQuestion') return main
   const busy = agents.filter((a) => a.state === 'working')
   if (!busy.length) return main
   const lastAt = Math.max(main.lastAt, ...busy.map((a) => a.lastAt))

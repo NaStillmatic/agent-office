@@ -4,7 +4,7 @@
 
 # Agent Office
 
-**Claude Code のセッションとサブエージェントが今なにをしているかを、3D オフィスのキャラクターで見せるローカルダッシュボード**
+**Claude Code と Codex のセッションとサブエージェントが今なにをしているかを、3D オフィスのキャラクターで見せるローカルダッシュボード**
 
 メイン Claude が自分の机でタイピングし、任せたサブエージェントたちが隣の席で働き、あなたの返事が必要になると席で吹き出しを出します。
 
@@ -15,7 +15,9 @@
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office の画面: 4 つのセッションがそれぞれのゾーンで作業し、3 体のサブエージェントがメインの隣で作業している" width="900">
+<img src="docs/screenshot.png" alt="Agent Office のテスト画面: ソウルを望むオフィスに 4 セッションと 6 体のサブエージェントを表示" width="900">
+
+<p><sub>テストデータで構成した画面です。4 セッションと 6 体のサブエージェントを表示し、実際の会話やプロジェクト情報は含みません。</sub></p>
 
 </div>
 
@@ -43,7 +45,7 @@ Claude Code でサブエージェントを何体も動かすと、ターミナ�
 ### 必要なもの
 
 - [Node.js](https://nodejs.org) 22.12 以上(22 LTS または 24 以上)
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) を使っているマシン(セッション記録を同じマシンから読みます)
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) または [Codex](https://openai.com/codex/) を使っているマシン(セッション記録を同じマシンから読みます)
 
 ### インストールと起動
 
@@ -79,7 +81,7 @@ npm run dev
 | ドアから出ていく | セッションまたはエージェントが終了した |
 
 - **名札の点・足元のリング・床の色**はセッション(ゾーン)の色、**服の色**はエージェントの種類の色です。
-- 大きな窓の外の景色はパソコンの時計に合わせて、夜明け → 朝 → 昼 → 夕暮れ → 夜と移り変わります。太陽と月が窓を横切り、夜にはビルの窓に明かりがともります。夕方からはオフィスの照明が少し暗くなり、スタンドとテーブルのランプが灯って周りを暖かく照らします。URL の後ろに `?hour=18.5` のように時刻を付けると、その時刻の景色を見られます。
+- 背面の二面の窓には、南山・Nソウルタワー・街並み・漢江のピクセルアートが広がり、時計に合わせて昼夜が切り替わります。川面の光がまたたき、船がゆっくり揺れます。カフェの横や作業エリアの間にはフロアランプを配置しています。夕方からは室内が少し暗くなり、ランプが暖かく灯ります。URL に `?hour=18.5` を付けると時刻を固定できます。
 - どの机にもデュアルモニターがあります。人が座ると左はデザインツール、右はターミナルが表示され、空席は青い画面です。
 - **マウスホイール**で拡大・縮小、右上のボタンで全画面にします。
 - **キャラクターや名札をクリック**すると詳細カードが開きます。空いている所をクリックするか `Esc` で閉じます。
@@ -93,13 +95,15 @@ npm run dev
 flowchart LR
   CC["Claude Code<br/>(メイン · サブエージェント)"] -- セッション記録 jsonl --> FS[("~/.claude/projects")]
   FS -- "1 秒ごとに変更されたファイルだけ<br/>末尾を読む" --> P["Vite プラグイン<br/>server/plugin.ts"]
+  CX["Codex"] -- rollout jsonl --> CS[("~/.codex/sessions")]
+  CS --> P
   P -- 状態判定 --> A["server/analyze.ts"]
   P -- "SSE · 状態とツール名のみ" --> UI["ブラウザ<br/>Vue + three.js"]
 ```
 
-1. Claude Code はセッションごとに `~/.claude/projects/<プロジェクト>/<セッションID>.jsonl` に、サブエージェントごとに `<セッションID>/subagents/agent-<ID>.jsonl` と `agent-<ID>.meta.json`(種類・説明)に記録を残します。
-2. 開発サーバーのプラグインが直近 30 分以内に変更されたセッション(と、いま開いているセッション)だけを選んでファイルの末尾を読み、結果待ちのツールがあるか・回答を終えたかで状態を決めます。変わっていないファイルは読み直しません。
-3. Claude Code がプロセスごとに残す `~/.claude/sessions/<pid>.json` で、セッションがまだ開いているかを確認します。
+1. Codex は `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` を読みます。`CODEX_HOME` で保存先を変更でき、`parent_thread_id` でサブエージェントを親に関連付けます。Claude Code はセッションごとに `~/.claude/projects/<プロジェクト>/<セッションID>.jsonl` に、サブエージェントごとに `<セッションID>/subagents/agent-<ID>.jsonl` と `agent-<ID>.meta.json`(種類・説明)に記録を残します。
+2. セッションファイル全体の探索は 5 秒ごと、発見済みの最近のファイルの変更確認と状態更新は 1 秒ごとに行います。新しいセッションや長い休止後に再開したセッションの表示には最大 5 秒かかります。開発サーバーのプラグインが直近 30 分以内に変更されたセッション(と、いま開いているセッション)だけを選んでファイルの末尾を読み、結果待ちのツールがあるか・回答を終えたかで状態を決めます。変わっていないファイルは読み直しません。Codex の識別情報もキャッシュし、ファイルの置換や書き直し時に更新します。
+3. Codex はタスクの開始・完了イベントと最終記録時刻で状態を判定します。Claude Code がプロセスごとに残す `~/.claude/sessions/<pid>.json` で、セッションがまだ開いているかを確認します。
 4. 状態が変わったときだけ SSE でブラウザに送り、ブラウザはそのスナップショットでオフィスを描きます。タブをいくつ開いても、サーバーはタイマーひとつで一度だけ読みます。
 
 <details>
@@ -222,11 +226,13 @@ scripts/check-deps.mjs              npm run dev の前に、依存パッケー�
 src/agent-office/scene.ts           three.js シーン — キャラクター · 移動 · 吹き出し · ゾーン割り当て
 src/agent-office/layout.ts          オフィスの配置(純粋データ) · 経路探索
 src/agent-office/tvScreen.ts        壁の TV 画面(使用量ゲージ・時計)
-src/agent-office/windowView.ts      窓の外の景色(時刻ごとの空・太陽・月・街の明かり)
+src/agent-office/exterior.ts        ソウルの昼夜パノラマ・川面の光・船の揺れ
+src/agent-office/windowView.ts      時刻ごとの空の色と夜の強さ
 src/agent-office/assets.ts          GLB ローダー · アニメーションクリップの合成(タイピングなど)
 src/agent-office/office.config.ts   プロジェクトごとの設定
 src/agent-office/assets/            Kenney の 3D モデル(CC0)
 server/plugin.ts                    Vite プラグイン — セッションのスキャン · SSE · ループバック検査
+server/sessionFiles.ts              セッションファイル索引 — 5 秒ごとの探索と変更確認
 server/analyze.ts                   状態判定の純粋関数
 ```
 

@@ -1,42 +1,44 @@
 <template>
   <div ref="pageEl" class="office-page">
-    <div class="office-stage">
+    <header class="office-toolbar">
+      <div class="office-hud">
+        <span class="hud-chip title">{{ m.appTitle }}</span>
+        <span class="hud-chip" :class="connected ? 'on' : 'off'">
+          {{ connected ? m.connected : m.disconnected }}
+        </span>
+        <span v-if="liveCount" class="hud-chip">{{ m.sessionsChip(busyCount, liveCount - busyCount) }}</span>
+        <span v-if="liveCount > ZONE_COUNT" class="hud-chip warn">{{ m.zonesLimit(ZONE_COUNT) }}</span>
+        <span class="hud-chip dim">{{ m.localOnly }}</span>
+      </div>
+
+      <div class="hud-actions">
+        <select v-model="locale" class="hud-lang" :title="m.language" :aria-label="m.language">
+          <option v-for="l in LOCALES" :key="l" :value="l">{{ LOCALE_NAMES[l] }}</option>
+        </select>
+        <button
+          type="button"
+          role="switch"
+          class="hud-switch"
+          :aria-checked="showProject"
+          :title="m.projectSwitchTitle"
+          @click="showProject = !showProject"
+        >
+          <span class="track"><i /></span>{{ m.projectSwitch }}
+        </button>
+        <button
+          type="button"
+          class="hud-fs"
+          :title="isFullscreen ? m.exitFullscreenTitle : m.fullscreen"
+          @click="toggleFullscreen"
+        >
+          {{ isFullscreen ? m.exitFullscreen : m.fullscreen }}
+        </button>
+      </div>
+    </header>
+
+    <div ref="stageEl" class="office-stage">
       <canvas ref="canvasEl" class="office-canvas" />
       <div ref="layerEl" class="office-layer" />
-    </div>
-
-    <div class="office-hud">
-      <span class="hud-chip title">{{ m.appTitle }}</span>
-      <span class="hud-chip" :class="connected ? 'on' : 'off'">
-        {{ connected ? m.connected : m.disconnected }}
-      </span>
-      <span v-if="liveCount" class="hud-chip">{{ m.sessionsChip(busyCount, liveCount - busyCount) }}</span>
-      <span v-if="liveCount > ZONE_COUNT" class="hud-chip warn">{{ m.zonesLimit(ZONE_COUNT) }}</span>
-      <span class="hud-chip dim">{{ m.localOnly }}</span>
-    </div>
-
-    <div class="hud-actions">
-      <select v-model="locale" class="hud-lang" :title="m.language" :aria-label="m.language">
-        <option v-for="l in LOCALES" :key="l" :value="l">{{ LOCALE_NAMES[l] }}</option>
-      </select>
-      <button
-        type="button"
-        role="switch"
-        class="hud-switch"
-        :aria-checked="showProject"
-        :title="m.projectSwitchTitle"
-        @click="showProject = !showProject"
-      >
-        <span class="track"><i /></span>{{ m.projectSwitch }}
-      </button>
-      <button
-        type="button"
-        class="hud-fs"
-        :title="isFullscreen ? m.exitFullscreenTitle : m.fullscreen"
-        @click="toggleFullscreen"
-      >
-        {{ isFullscreen ? m.exitFullscreen : m.fullscreen }}
-      </button>
     </div>
 
     <aside v-if="picked" class="office-card" :style="{ '--team': picked.team }">
@@ -99,6 +101,7 @@ const snapshot = ref<Snapshot | null>(null)
 const connected = ref(false)
 const isFullscreen = ref(false)
 const pageEl = ref<HTMLElement | null>(null)
+const stageEl = ref<HTMLElement | null>(null)
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const layerEl = ref<HTMLElement | null>(null)
 let es: EventSource | null = null
@@ -230,7 +233,7 @@ watch(snapshot, (v) => {
 
 /** 화면을 꽉 채우도록 렌더 크기를 맞춘다 */
 function fitSize() {
-  const el = pageEl.value
+  const el = stageEl.value
   if (!el || !scene) return
   scene.resize(el.clientWidth, el.clientHeight)
 }
@@ -278,9 +281,9 @@ onMounted(() => {
   scene.setShowProject(showProject.value)
   scene.sync(snapshot.value?.sessions ?? [], snapshot.value?.now)
   fitSize()
-  if (pageEl.value) {
+  if (stageEl.value) {
     observer = new ResizeObserver(fitSize)
-    observer.observe(pageEl.value)
+    observer.observe(stageEl.value)
   }
   document.addEventListener('fullscreenchange', onFullscreenChange)
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -315,13 +318,16 @@ onBeforeUnmount(() => {
 <style scoped>
 .office-page {
   position: relative;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: #1b1e2e;
+  background: #e8eceb;
 }
 .office-stage {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 .office-canvas {
   position: absolute;
@@ -337,125 +343,95 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* 화면 구석 표시 */
-.office-hud {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  right: 330px; /* 오른쪽 위 버튼 묶음(언어·프로젝트명 스위치·전체화면) 자리 */
+/* One shared toolbar contains the status and actions above the scene. */
+.office-toolbar {
+  box-sizing: border-box;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
-  gap: 6px;
-  pointer-events: none;
+  flex: none;
+  gap: 8px 18px;
+  min-height: 52px;
+  padding: 8px 18px;
+  background: rgba(255, 255, 255, 0.94);
+  border-bottom: 1px solid #dce2e2;
+  backdrop-filter: blur(16px);
   z-index: 40;
+}
+.office-hud {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
 }
 .hud-chip {
-  padding: 2px 8px;
-  background: rgba(20, 22, 36, 0.82);
-  border: 2px solid #44486a;
-  color: #e6e8f5;
-  font-size: 11px;
-  line-height: 15px;
+  flex: none;
+  color: #4e5a60;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
 }
-.hud-chip.title {
-  font-weight: 700;
-  border-color: #6c72a8;
-}
-.hud-chip.on {
-  color: #7fe0a0;
-  border-color: #3f8f5f;
-}
-.hud-chip.off {
-  color: #ff8f8f;
-  border-color: #9a4a4a;
-}
-.hud-chip.warn {
-  color: #f0c56a;
-  border-color: #9a7a2a;
-}
-.hud-chip.dim {
-  color: #9aa0c0;
-}
-.hud-actions {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 40;
-  display: flex;
-  gap: 6px;
-}
-.hud-lang {
-  padding: 2px 6px;
-  background: rgba(20, 22, 36, 0.82);
-  border: 2px solid #6c72a8;
-  border-radius: 0;
-  color: #e6e8f5;
+.hud-chip.title { font-size: 14px; font-weight: 650; color: #263237; letter-spacing: -0.02em; }
+.hud-chip.on,
+.hud-chip.off { display: inline-flex; align-items: center; gap: 5px; }
+.hud-chip.on { color: #32705a; }
+.hud-chip.off { color: #a73d3d; }
+.hud-chip.on::before,
+.hud-chip.off::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.hud-chip.warn { color: #8a6223; }
+.hud-chip.dim { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #7d878d; font-size: 11px; }
+.hud-actions { display: flex; align-items: center; flex: none; gap: 6px; }
+.hud-lang,
+.hud-switch,
+.hud-fs {
+  box-sizing: border-box;
+  min-height: 32px;
+  padding: 5px 11px;
+  background: #f6f8f8;
+  border: 1px solid #e0e5e5;
+  border-radius: 18px;
+  color: #414d53;
   font: inherit;
-  font-size: 11px;
-  line-height: 15px;
+  font-size: 12px;
+  line-height: 20px;
   cursor: pointer;
 }
-.hud-lang:hover {
-  background: #2d3252;
-}
-.hud-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 9px 2px 6px;
-  background: rgba(20, 22, 36, 0.82);
-  border: 2px solid #44486a;
-  color: #9aa0c0;
-  font-size: 11px;
-  line-height: 15px;
-  cursor: pointer;
-}
-.hud-switch:hover {
-  background: #2d3252;
-}
-.hud-switch[aria-checked='true'] {
-  border-color: #6c72a8;
-  color: #e6e8f5;
-}
+.hud-lang:hover,
+.hud-switch:hover,
+.hud-fs:hover { background: #edf1f1; }
+.hud-lang:focus-visible,
+.hud-switch:focus-visible,
+.hud-fs:focus-visible { outline: 2px solid #547e9c; outline-offset: 2px; }
+.hud-switch,
+.hud-fs { display: inline-flex; align-items: center; gap: 6px; }
 .hud-switch .track {
   position: relative;
-  width: 22px;
-  height: 12px;
-  border-radius: 6px;
-  background: #44486a;
+  width: 24px;
+  height: 14px;
+  border-radius: 7px;
+  background: #a8b1b6;
   transition: background 0.15s;
 }
 .hud-switch .track i {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: #c9ccdf;
+  background: #fff;
+  box-shadow: 0 1px 3px #0002;
   transition: transform 0.15s;
 }
-.hud-switch[aria-checked='true'] .track {
-  background: #3f8f5f;
-}
-.hud-switch[aria-checked='true'] .track i {
-  transform: translateX(10px);
-  background: #fff;
-}
-.hud-fs {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
-  background: rgba(20, 22, 36, 0.82);
-  border: 2px solid #6c72a8;
-  color: #e6e8f5;
-  font-size: 11px;
-  line-height: 15px;
-  cursor: pointer;
-}
-.hud-fs:hover {
-  background: #2d3252;
+.hud-switch[aria-checked='true'] .track { background: #648677; }
+.hud-switch[aria-checked='true'] .track i { transform: translateX(10px); }
+@media (max-width: 820px) {
+  .office-toolbar { padding: 8px 12px; gap: 7px; }
+  .office-hud { flex-basis: 100%; flex-wrap: wrap; gap: 4px 10px; }
+  .hud-actions { margin-left: auto; }
+  .hud-chip.dim { display: none; }
 }
 .office-card {
   position: absolute;
@@ -463,10 +439,13 @@ onBeforeUnmount(() => {
   bottom: 12px;
   width: min(calc(100% - 24px), 300px);
   padding: 10px 12px;
-  background: rgba(20, 22, 36, 0.92);
-  border: 2px solid var(--team, #6c72a8);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px #25343e12;
+  border: 1px solid #d7dddf;
   border-left-width: 5px;
-  color: #e6e8f5;
+  color: #303b42;
   font-size: 12px;
   line-height: 1.5;
   z-index: 45;
@@ -478,13 +457,13 @@ onBeforeUnmount(() => {
   padding: 0 4px;
   background: none;
   border: 0;
-  color: #9aa0c0;
+  color: #6d7880;
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
 }
 .card-close:hover {
-  color: #fff;
+  color: #1d252a;
 }
 .card-name {
   padding-right: 18px;
@@ -493,7 +472,7 @@ onBeforeUnmount(() => {
 }
 .card-desc {
   margin-top: 2px;
-  color: #c9ccdf;
+  color: #59646c;
   overflow-wrap: anywhere;
 }
 .office-card dl {
@@ -503,20 +482,20 @@ onBeforeUnmount(() => {
   margin: 8px 0 0;
 }
 .office-card dt {
-  color: #9aa0c0;
+  color: #6d7880;
 }
 .office-card dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
 .office-card dd[data-state='working'] {
-  color: #7fe0a0;
+  color: #26704a;
 }
 .office-card dd[data-state='waiting'] {
-  color: #f0c56a;
+  color: #8a6223;
 }
 .office-card dd[data-state='stall'] {
-  color: #ff8f8f;
+  color: #a73d3d;
 }
 .office-note {
   position: absolute;
@@ -525,16 +504,17 @@ onBeforeUnmount(() => {
   transform: translateX(-50%);
   width: min(80%, 520px);
   padding: 8px 12px;
-  background: rgba(20, 22, 36, 0.88);
-  border: 2px solid #44486a;
-  color: #e6e8f5;
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 12px;
+  border: 1px solid #d7dddf;
+  color: #303b42;
   font-size: 12px;
   line-height: 1.5;
   text-align: center;
   z-index: 40;
 }
 .office-note code {
-  color: #f0c56a;
+  color: #8a6223;
 }
 
 /* 이름표·말풍선·세션 표식은 장면 코드(CSS2DRenderer)가 만든 DOM 이다. 위치(transform)는 렌더러가 잡는다 */
@@ -563,10 +543,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   padding: 1px 5px 1px 4px;
-  background: color-mix(in srgb, var(--team, #888) 30%, rgba(20, 22, 36, 0.95));
-  border: 2px solid var(--team, #888);
+  background: rgba(255, 255, 255, 0.93);
+  border: 1px solid color-mix(in srgb, var(--team, #888) 40%, #d7dddf);
   border-radius: 4px;
-  color: #f2f3fb;
+  color: #303b42;
   font-size: 10px;
   font-weight: 700;
   line-height: 13px;
@@ -611,9 +591,10 @@ onBeforeUnmount(() => {
 }
 .office-layer :deep(.ao-zone) {
   padding: 0 6px;
-  background: rgba(20, 22, 36, 0.8);
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 5px;
   border-left: 3px solid var(--team, #888);
-  color: #e6e8f5;
+  color: #303b42;
   font-size: 10px;
   line-height: 14px;
   white-space: nowrap;
@@ -630,7 +611,7 @@ onBeforeUnmount(() => {
   gap: 4px;
   padding: 3px 7px;
   background: #fff;
-  border: 2px solid #2b2f45;
+  border: 1px solid #b6c0c5;
   border-radius: 10px;
   white-space: nowrap;
 }
@@ -649,8 +630,8 @@ onBeforeUnmount(() => {
   width: 7px;
   height: 7px;
   background: #fff;
-  border-right: 2px solid #2b2f45;
-  border-bottom: 2px solid #2b2f45;
+  border-right: 1px solid #b6c0c5;
+  border-bottom: 1px solid #b6c0c5;
   transform: translateX(-50%) rotate(45deg);
 }
 .office-layer :deep(.ao-dots) {
@@ -672,5 +653,9 @@ onBeforeUnmount(() => {
   50% {
     transform: translateY(-7px);
   }
+}
+@media (prefers-reduced-motion: reduce) {
+  .office-layer :deep(.ao-stack.is-wait > .ao-label),
+  .office-layer :deep(.ao-stack.is-wait > .ao-bubble) { animation: none; }
 }
 </style>

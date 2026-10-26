@@ -17,7 +17,7 @@ import {
 } from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
-const urls = import.meta.glob('./assets/**/*.{glb,png}', {
+const urls = import.meta.glob(['./assets/furniture/*.glb', './assets/characters/*.{glb,png}'], {
   eager: true,
   query: '?url',
   import: 'default',

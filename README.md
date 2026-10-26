@@ -4,9 +4,9 @@
 
 # Agent Office
 
-**Claude Code 세션과 서브에이전트가 지금 무엇을 하는지, 3D 사무실 속 캐릭터로 보여 주는 로컬 대시보드**
+**Claude Code와 Codex 세션이 지금 무엇을 하는지, 3D 사무실 속 캐릭터로 보여 주는 로컬 대시보드**
 
-메인 Claude 가 책상에서 타이핑하고, 맡긴 서브에이전트들이 옆자리에서 일하고, 내 답이 필요하면 자리에서 말풍선을 띄웁니다.
+메인 에이전트가 책상에서 타이핑하고, 맡긴 서브에이전트들이 옆자리에서 일하고, 내 답이 필요하면 자리에서 말풍선을 띄웁니다.
 
 ![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)
 ![three.js](https://img.shields.io/badge/three.js-r186-000000?logo=threedotjs&logoColor=white)
@@ -15,7 +15,9 @@
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office 화면: 세션 네 개가 각자 구역에서 일하고, 서브에이전트 셋이 메인 옆에서 작업 중이다" width="900">
+<img src="docs/screenshot.png" alt="Agent Office 테스트 화면: 서울 배경의 사무실에 세션 4개와 서브에이전트 6개가 표시되어 있다" width="900">
+
+<p><sub>테스트 데이터로 구성한 화면입니다. 세션 4개와 서브에이전트 6개를 표시하며 실제 대화나 프로젝트 정보는 포함하지 않습니다.</sub></p>
 
 </div>
 
@@ -23,7 +25,7 @@
 
 ## 왜 만들었나
 
-Claude Code 로 서브에이전트를 여러 개 돌리면 터미널만 봐서는 누가 무엇을 하고 있는지, 어느 세션이 내 답을 기다리는지 한눈에 알기 어렵습니다. Agent Office 는 `~/.claude/projects` 의 세션 기록을 읽어 **세션마다 사무실 구역 하나**, **에이전트마다 캐릭터 하나**로 보여 줍니다. 설치할 것도, Claude Code 쪽에 설정할 것도 없습니다. 띄워 두기만 하면 됩니다.
+Claude Code 나 Codex 세션을 여러 개 돌리면 터미널만 봐서는 누가 무엇을 하고 있는지, 어느 세션이 내 답을 기다리는지 한눈에 알기 어렵습니다. Agent Office 는 Claude Code 와 Codex 의 로컬 세션 기록을 읽어 **세션마다 사무실 구역 하나**, **에이전트마다 캐릭터 하나**로 보여 줍니다. 설치할 것도 설정할 것도 없습니다. 띄워 두기만 하면 됩니다.
 
 ## 주요 기능
 
@@ -43,7 +45,7 @@ Claude Code 로 서브에이전트를 여러 개 돌리면 터미널만 봐서�
 ### 준비물
 
 - [Node.js](https://nodejs.org) 22.12 이상 (22 LTS 또는 24 이상)
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) 를 쓰고 있는 컴퓨터 (세션 기록을 같은 컴퓨터에서 읽습니다)
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) 또는 [Codex](https://openai.com/codex/) 를 쓰고 있는 컴퓨터 (세션 기록을 같은 컴퓨터에서 읽습니다)
 
 ### 설치와 실행
 
@@ -54,7 +56,7 @@ npm install
 npm run dev
 ```
 
-브라우저에서 <http://localhost:5180> 을 엽니다. 그다음 평소처럼 Claude Code 로 작업하면 사무실에 캐릭터가 들어옵니다.
+브라우저에서 <http://localhost:5180> 을 엽니다. Claude Code 나 Codex 로 작업하면 사무실에 캐릭터가 들어옵니다.
 
 > [!NOTE]
 > 세션 데이터는 dev 서버의 Vite 플러그인이 내려 줍니다. `npm run build` 결과물(정적 파일)만 올려서는 동작하지 않습니다.
@@ -79,7 +81,7 @@ npm run dev
 | 문으로 걸어 나감 | 세션·에이전트가 끝남 |
 
 - **이름표 점·발밑 링·바닥 색**은 세션(구역) 색이고, **옷 색**은 에이전트 종류 색입니다.
-- 큰 창 밖 풍경은 컴퓨터 시계를 따라 새벽 → 아침 → 낮 → 해질녘 → 밤으로 바뀝니다. 해와 달이 창을 가로질러 움직이고, 밤에는 건물 창에 불이 켜집니다. 저녁부터는 사무실 조명이 조금 어두워지고 스탠드·협탁 램프가 켜져 주변에 따뜻한 불빛이 번집니다. 주소 뒤에 `?hour=18.5` 처럼 시각을 붙이면 그 시각으로 볼 수 있습니다.
+- 뒤쪽 두 면의 통유리 너머에는 입체감 있는 픽셀아트로 그린 남산·N서울타워·도시와 한강이 보입니다. 풍경은 창틀 안에서만 이어지며 컴퓨터 시계에 따라 낮·밤이 전환됩니다. 강물에는 작은 픽셀 반사광이 잔잔하게 반짝이고, 배가 가볍게 흔들립니다. 카페 옆과 업무 구역 사이에는 스탠드 조명을 배치했습니다. 저녁부터는 사무실 조명이 조금 어두워지고 스탠드·협탁 램프가 켜져 주변에 따뜻한 불빛이 번집니다. 주소 뒤에 `?hour=18.5` 처럼 시각을 붙이면 그 시각으로 볼 수 있습니다.
 - 책상마다 듀얼 모니터가 있습니다. 사람이 앉으면 왼쪽은 디자인 툴 화면, 오른쪽은 터미널이 켜지고, 빈자리는 파란 화면입니다.
 - **마우스 휠**로 확대·축소, 오른쪽 위 버튼으로 전체화면을 켭니다.
 - **캐릭터나 이름표를 클릭**하면 상세 카드가 열립니다. 빈 곳을 누르거나 `Esc` 로 닫습니다.
@@ -91,15 +93,17 @@ npm run dev
 
 ```mermaid
 flowchart LR
-  CC["Claude Code<br/>(메인 · 서브에이전트)"] -- 세션 기록 jsonl --> FS[("~/.claude/projects")]
-  FS -- "1초마다 바뀐 파일만<br/>끝부분 읽기" --> P["Vite 플러그인<br/>server/plugin.ts"]
-  P -- 상태 판정 --> A["server/analyze.ts"]
+  CC["Claude Code"] -- jsonl --> FS[("~/.claude/projects")]
+  CX["Codex"] -- rollout jsonl --> CS[("~/.codex/sessions")]
+  FS --> P
+  CS --> P
+  P["Vite 플러그인<br/>server/plugin.ts"] -- "1초마다 변경된 파일의<br/>끝부분만 읽기" --> A["상태 판정<br/>server/analyze.ts"]
   P -- "SSE · 상태와 도구 이름만" --> UI["브라우저<br/>Vue + three.js"]
 ```
 
-1. Claude Code 는 세션마다 `~/.claude/projects/<프로젝트>/<세션ID>.jsonl` 에, 서브에이전트마다 `<세션ID>/subagents/agent-<ID>.jsonl` 과 `agent-<ID>.meta.json`(종류·설명)에 기록을 남깁니다.
-2. dev 서버의 플러그인이 최근 30분 안에 바뀐 세션(과 지금 열려 있는 세션)만 골라 파일 끝부분을 읽고, 결과를 기다리는 도구가 있는지·답변을 마쳤는지로 상태를 정합니다. 파일이 그대로면 다시 읽지 않습니다.
-3. Claude Code 가 프로세스마다 남기는 `~/.claude/sessions/<pid>.json` 으로 세션이 아직 열려 있는지 확인합니다.
+1. Claude Code 는 `~/.claude/projects` 에, Codex 는 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 에 세션 기록을 남깁니다. Codex 의 `CODEX_HOME` 환경 변수로 기본 폴더를 바꾼 경우에도 그 경로를 읽습니다. Codex 서브에이전트는 `parent_thread_id` 로 부모 세션에 연결합니다.
+2. 전체 세션 파일 탐색은 5초마다, 이미 발견한 최근 파일의 변경 확인과 상태 갱신은 1초마다 수행합니다. 새 세션이나 오래 쉬다가 재개된 세션은 표시되기까지 최대 5초가 걸릴 수 있습니다. dev 서버의 플러그인이 최근 30분 안에 바뀐 세션(과 지금 열려 있는 세션)만 골라 파일 끝부분을 읽고, 결과를 기다리는 도구가 있는지·답변을 마쳤는지로 상태를 정합니다. 파일이 그대로면 다시 읽지 않습니다. Codex 세션의 식별 정보도 캐시하고, 파일이 교체되거나 다시 쓰이면 갱신합니다.
+3. Claude Code 는 프로세스별 세션 파일도 확인합니다. Codex 는 완료·시작 이벤트와 마지막 기록 시각으로 상태를 판정합니다.
 4. 상태가 바뀔 때만 SSE 로 브라우저에 보내고, 브라우저는 그 스냅샷으로 사무실을 그립니다. 탭을 여러 개 열어도 서버는 타이머 하나로 한 번만 읽습니다.
 
 <details>
@@ -147,7 +151,7 @@ flowchart LR
 | `AGENT_LOOKS` | 에이전트 종류별 캐릭터 모델·옷 색 | 모델은 종류 이름으로, 옷 색은 22가지 후보 중 종류끼리 겹치지 않게 자동으로 고름 |
 | `SEAT_OF_TYPE` | 에이전트 종류별 선호 자리(0~5) | `SEAT_OTHER` 자리 → 빈자리 아무 곳 |
 | `AGENT_NAMES` | 이름표에 보일 이름 | `agentType` 그대로. 플러그인 에이전트(`feature-dev:code-reviewer`)는 `code-reviewer` |
-| `OFFICE_ART` | 소파 위 액자 그림(`'seaside'` 바다, `'skyline'` 노을 아파트 픽셀아트) | `null` 이면 `OFFICE_SIGN` 글자 |
+| `OFFICE_ART` | 독립형 액자 그림(`'seaside'` 바다, `'skyline'` 노을 도시 픽셀아트) | `null` 이면 `OFFICE_SIGN` 글자 |
 | `OFFICE_SIGN` | 벽 액자 글자 | 둘 다 비면 액자 없음 |
 | `MAIN_STAYS_SEATED` | 메인 Claude 가 늘 자리에 앉아 있음(기본 `true`) | `false` 면 기다리는 동안 휴게실에 가고, 오래 조용하면 돌아다님 |
 
@@ -179,10 +183,14 @@ npm run statusline:uninstall  # 제거: 원래 상태줄로 되돌린다
 
 ### 세션 기록 위치
 
-기본은 `~/.claude/projects` (Windows 는 `%USERPROFILE%\.claude\projects`) 입니다. Claude Code 설정 폴더를 `CLAUDE_CONFIG_DIR` 로 옮겼다면 dev 서버를 띄우는 셸에도 같은 값을 주세요.
+Claude Code 는 `~/.claude/projects` (Windows 는 `%USERPROFILE%\.claude\projects`), Codex 는 `~/.codex/sessions` (Windows 는 `%USERPROFILE%\.codex\sessions`) 을 기본으로 씁니다. 데이터 폴더를 옮겼다면 dev 서버를 띄우는 셸에서 `CLAUDE_CONFIG_DIR` 또는 `CODEX_HOME` 을 설정하세요.
 
 ```bash
 CLAUDE_CONFIG_DIR=/path/to/claude-config npm run dev
+```
+
+```bash
+CODEX_HOME=/path/to/codex-home npm run dev
 ```
 
 > [!TIP]
@@ -199,7 +207,7 @@ CLAUDE_CONFIG_DIR=/path/to/claude-config npm run dev
 
 ## 알려진 한계
 
-- **세션 기록 형식은 공개 규약이 아닙니다.** Claude Code 버전에 따라 바뀔 수 있고, 그러면 상태 판정이 어긋날 수 있습니다. 모르는 필드는 무시하고 깨진 줄은 건너뜁니다.
+- **세션 기록 형식은 안정된 공개 API가 아닙니다.** Claude Code 나 Codex 가 형식을 바꾸면 상태 판정에 영향이 있을 수 있습니다. 모르는 필드는 무시하고 깨진 줄은 건너뜁니다.
 - 구역은 4개라 동시에 5개 이상 세션이 열려 있으면 일부는 화면에 안 나옵니다.
 - WSL 안의 Claude Code 를 Windows 에서 띄운 Agent Office 로 보는 것처럼 프로세스를 확인할 수 없는 경우에는, 세션이 열려 있는 것으로 봅니다.
 - 서브에이전트가 강제 종료되면 `응답 없음` 이 뜨기까지 12분이 걸립니다(긴 빌드를 오탐하지 않으려는 여유).
@@ -222,11 +230,13 @@ scripts/check-deps.mjs              npm run dev 전에 의존성이 이 컴퓨�
 src/agent-office/scene.ts           three.js 장면 — 캐릭터 · 이동 · 말풍선 · 구역 배정
 src/agent-office/layout.ts          사무실 배치(순수 데이터) · 길찾기
 src/agent-office/tvScreen.ts        벽 TV 화면(사용량 게이지·시계)
-src/agent-office/windowView.ts      창밖 풍경(시각별 하늘·해·달·건물 불빛)
+src/agent-office/exterior.ts        픽셀아트 원경(서울 낮·밤 파노라마 전환)
+src/agent-office/windowView.ts      시간대별 하늘색·밤의 세기
 src/agent-office/assets.ts          GLB 로더 · 애니메이션 클립 합성(타이핑 등)
 src/agent-office/office.config.ts   프로젝트별 설정
 src/agent-office/assets/            Kenney 3D 모델 (CC0)
 server/plugin.ts                    Vite 플러그인 — 세션 스캔 · SSE · loopback 검사
+server/sessionFiles.ts              세션 파일 인덱스 — 5초 탐색 · 최근 파일 변경 확인
 server/analyze.ts                   상태 판정 순수 함수
 ```
 

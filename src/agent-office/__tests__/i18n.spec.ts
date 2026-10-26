@@ -57,6 +57,6 @@ describe('다국어 사전', () => {
     setLocale('ja')
     expect(mainTitle(s)).toBe('サブエージェント を待機中')
     setLocale('zh')
-    expect(mainTitle({ ...s, agents: [] })).toBe('主 Claude')
+    expect(mainTitle({ ...s, agents: [] })).toBe('主智能体')
   })
 })

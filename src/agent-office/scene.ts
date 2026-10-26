@@ -12,14 +12,17 @@ import {
   AnimationAction,
   AnimationMixer,
   CanvasTexture,
+  CatmullRomCurve3,
   CircleGeometry,
   CylinderGeometry,
   Color,
   DirectionalLight,
+  DoubleSide,
   Group,
   HemisphereLight,
   InstancedMesh,
   LoopRepeat,
+  LatheGeometry,
   Material,
   Matrix4,
   Mesh,
@@ -31,19 +34,24 @@ import {
   OrthographicCamera,
   PCFShadowMap,
   PlaneGeometry,
+  Plane,
   PointLight,
   RepeatWrapping,
   RingGeometry,
   SRGBColorSpace,
   Scene,
+  Shape,
+  ShapeGeometry,
   Texture,
   TorusGeometry,
+  TubeGeometry,
   Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import {
   CHARACTER_NAMES,
   loadOfficeAssets,
@@ -53,11 +61,13 @@ import {
 } from './assets'
 import {
   D,
+  CAFE,
   DOOR,
+  ELEVATOR,
   LAYOUT,
   TEAM_COLORS,
-  WALL_SY,
   W,
+  WALL_SY,
   ZONE_COUNT,
   ZONE_ORIGIN,
   ZONE_SIZE,
@@ -77,7 +87,9 @@ import {
 } from './layout'
 import { AGENT_LOOKS, AGENT_NAMES, MAIN_STAYS_SEATED, SEAT_OF_TYPE, SEAT_OTHER } from './office.config'
 import { t } from '../i18n'
-import { drawWindowView, nightness } from './windowView'
+import { nightness } from './windowView'
+import { createSeoulPixelBackdrop } from './exterior'
+import { FloorElevator } from './elevator'
 import { drawTvScreen, type UsageInfo } from './tvScreen'
 
 export interface Status {
@@ -109,16 +121,14 @@ const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead', 'LS'])
 const MONITOR_BODY = '#c9d1d6'
 const SCREEN_IDLE_COLOR = '#2f8fe0'
 const SCREEN_IDLE_GLOW = 0.55
-/**
- * computerScreen 모델의 화면 면(재질 'metal', 모델 좌표). 위쪽이 뒤로 기운 사각형이라 그 위에 같은 기울기로
- * 내용 판을 덧댄다. GLB 의 화면 면 꼭짓점을 잰 값이다.
- */
-const SCREEN_FACE = { x0: 0.0068, x1: 0.3859, yBottom: 0.0556, zBottom: -0.0358, yTop: 0.287, zTop: -0.0683 }
+/** Studio Display 스타일 화면의 로컬 좌표. 본체 앞(+z)에 콘텐츠를 붙인다. */
+const SCREEN_FACE = { x0: -0.1895, x1: 0.1895, yBottom: 0.095, zBottom: 0.018, yTop: 0.3264, zTop: 0.018 }
 /** 터미널 텍스처: 한 줄 높이(px)·줄 수. 자리마다 보이는 창을 아래로 옮겨 스크롤한다 */
 const TERM_LINE = 14
 const TERM_LINES = 60
 /** 앉은 사람이 하는 일별 터미널 스크롤 속도(줄/초). 대기 중이면 멈춘다 */
 const TERM_SPEED = { bash: 14, type: 5, read: 2 }
+const FLOOR_CLIP = new Plane(new Vector3(0, 1, 0), 0)
 const WALK_SPEED = 1.6 // 월드 단위/초
 const CHAR_SCALE = 1.1
 /** 서 있는 모델의 머리 끝 높이(모델 좌표, 스케일 1 기준) */
@@ -130,19 +140,16 @@ const CHAR_HEIGHT = MODEL_HEAD_TOP * CHAR_SCALE
 const SEAT_TOP = 0.233
 /** 앉은 자세에서 허벅지 아랫면의 모델 좌표 높이(몸통 밑면보다 낮다). 이 면이 방석 윗면에 얹힌다 */
 const SIT_THIGH_BOTTOM = -0.098
-const WALL_MODELS = new Set(['wall', 'wallWindow', 'wallDoorway'])
-const NO_SHADOW = new Set(['rugRound', 'rugDoormat', ...WALL_MODELS])
-const WALL_COLOR = new Color('#f1d18a')
-/** 휴게 공간 소파·1인용 의자의 천 색(밝은 머스터드, 딥 틸 러그와 보색). 모델 원래 색은 연어빛 분홍 */
-const SOFA_COLOR = new Color('#e8b33c')
+const NO_SHADOW = new Set(['rugRound', 'rugDoormat'])
+/** 휴게 공간 소파·1인용 의자의 연회색 천 */
+const SOFA_COLOR = new Color('#c4cec9')
 /** 천 소파라 거의 무광 */
 const SOFA_ROUGHNESS = 0.85
 const SOFA_MODELS = ['loungeSofa', 'loungeChair']
+const TEAM_FLOORS = ['#c3d8d4', '#e1d3bc', '#dfc9cd', '#cedcc3']
 /** 램프 불빛 색과 한밤 세기 */
 const LAMP_GLOW = '#ffbf73'
 const LAMP_POWER = 2.2
-/** 창문 유리 색(하늘빛 파랑) */
-const WINDOW_GLASS = '#7cc4f2'
 /** 둥근 러그: 나무 바닥·가죽 소파(주황빛 갈색)와 보색이라 눈에 띄는 딥 틸 바탕과 더 짙은 테(재질 이름별) */
 const RUG_COLORS: Record<string, Color> = { carpet: new Color('#2c7a7b'), carpetDarker: new Color('#1d5556') }
 
@@ -268,6 +275,8 @@ interface Char {
   idleTimer: number
   standTimer: number
   leaving: boolean
+  entering: boolean
+  ridingDown: boolean
   removed: boolean
   /** 입장 전 대기(여럿이 한꺼번에 들어와 겹치지 않게 시차를 둔다) */
   delay: number
@@ -317,7 +326,7 @@ function actOf(s: Status): Act {
 }
 
 /** 서브에이전트를 띄우는 도구. Task 는 예전 Claude Code 의 이름이다 */
-const AGENT_TOOLS = new Set(['Agent', 'Task'])
+const AGENT_TOOLS = new Set(['Agent', 'Task', 'spawn_agent', 'wait', 'send_input'])
 
 /**
  * 메인 말풍선 설명. 에이전트를 기다리는 중이면 칩(Agent)만으로는 누구를 기다리는지 모르므로
@@ -421,50 +430,31 @@ function turnToward(cur: number, target: number, step: number) {
   return cur + Math.sign(diff) * step
 }
 
-/**
- * 헤링본 바닥 텍스처 한 장이 덮는 월드 길이. 판자를 45° 눕힌 무늬의 반복 주기(√2·판자 폭, 4√2·판자 폭)가
- * 텍스처(512px)에 딱 나눠떨어지도록 2√2 로 잡는다. 그러면 판자 폭이 0.25, 길이가 1.0 이 된다.
- */
-const FLOOR_TILE = 2 * Math.SQRT2
+/** Four large 1.2 m limestone tiles per repeat, with fine seams and a matte finish. */
+const FLOOR_TILE = 2.4
 
-/**
- * 헤링본 나무 바닥 텍스처(FLOOR_TILE × FLOOR_TILE 월드, 512px). 판자가 벽에 45° 로 놓여 끝이 V 자로 맞물린다.
- * 먼저 판자를 0°·90° 로 계단처럼 놓은 무늬(가로 판자 (n, n), 세로 판자 (n, n+1), 띠를 (4W, -4W) 씩 옮김)를 그리고,
- * 캔버스를 -45° 돌려 그린다. 판자 폭 W 를 512/(8√2) px 로 잡아 돌린 무늬의 반복 주기(64px·256px)가 512px 에 나눠떨어진다.
- * 판자 색은 따뜻한 나무 톤 네 가지 중에서, 경계에서 끊기지 않게 반복 주기 안의 위치((i-4j) mod 8)로 고른다.
- */
-const WOOD_TONES = ['hsl(30 52% 61%)', 'hsl(28 50% 57%)', 'hsl(32 55% 64%)', 'hsl(27 48% 54%)']
-function woodTexture() {
-  const size = 512
-  const u = size / (8 * Math.SQRT2) // 판자 폭(px)
-  const len = 4 // 판자 길이(폭의 배수)
+function stoneTexture() {
+  const size = 256
+  const tile = size / 2
   const cv = document.createElement('canvas')
   cv.width = cv.height = size
   const g = cv.getContext('2d')!
-  const plank = (x: number, y: number, w: number, h: number, tone: string) => {
-    g.fillStyle = tone
-    g.fillRect(x, y, w, h)
-    // 이음매: 위·왼쪽은 어두운 선, 그 안쪽에 옅은 밝은 선을 그어 판자가 살짝 도드라져 보이게 한다
-    g.fillStyle = 'rgba(90,50,20,0.45)'
-    g.fillRect(x, y, w, 2)
-    g.fillRect(x, y, 2, h)
-    g.fillStyle = 'rgba(255,235,200,0.12)'
-    g.fillRect(x + 2, y + 2, w - 2, 2)
-  }
-  const tone = (i: number, j: number, vertical: boolean) => {
-    const k = (((i - len * j) % 8) + 8) % 8
-    return WOOD_TONES[(k * 5 + (vertical ? 3 : 0)) % WOOD_TONES.length]
-  }
-  // 캔버스 좌표 q = R(-45°)·p. 캔버스 [0,512]² 는 돌리기 전 좌표로 x ∈ [-362, 362], y ∈ [0, 724] 쯤이다
-  g.rotate(-Math.PI / 4)
-  const reach = Math.ceil((size * Math.SQRT2) / u) + len + 2
-  for (let i = -reach; i <= reach; i++) {
-    for (let j = -reach; j <= reach; j++) {
-      const bx = i + len * j
-      const by = i - len * j
-      if (bx < -reach || bx > reach || by < -len - 2 || by > reach) continue
-      plank(bx * u, by * u, len * u, u, tone(i, j, false)) // 가로 판자
-      plank(bx * u, (by + 1) * u, u, len * u, tone(i, j, true)) // 세로 판자
+  let seed = 614
+  const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32
+  const tones = ['#d6d9d8', '#d4d7d6', '#d8dad9', '#d5d8d7']
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 2; col++) {
+      const x = col * tile
+      const y = row * tile
+      g.fillStyle = tones[row * 2 + col]
+      g.fillRect(x, y, tile, tile)
+      for (let i = 0; i < 1800; i++) {
+        g.fillStyle = random() > 0.5 ? 'rgba(255,255,255,0.045)' : 'rgba(71,80,83,0.035)'
+        g.fillRect(x + Math.floor(random() * tile), y + Math.floor(random() * tile), 1, 1)
+      }
+      g.fillStyle = 'rgba(86,96,101,0.18)'
+      g.fillRect(x, y, tile, 1)
+      g.fillRect(x, y, 1, tile)
     }
   }
   const tex = new CanvasTexture(cv)
@@ -788,6 +778,8 @@ export class OfficeScene {
   private target = new Vector3(W / 2, 0.3, D / 2)
   private assets: OfficeAssets | null = null
   private chars = new Map<string, Char>()
+  private elevator: { motion: FloorElevator; pod: Group; signal: MeshStandardMaterial } | null = null
+  private barista: { mixer: AnimationMixer; label: HTMLElement } | null = null
   private zones: (string | null)[] = new Array(ZONE_COUNT).fill(null)
   private zoneMats: MeshBasicMaterial[] = []
   private zoneLabels: { el: HTMLElement; obj: CSS2DObject }[] = []
@@ -803,7 +795,7 @@ export class OfficeScene {
   private ringGeo = new RingGeometry(0.2, 0.27, 40)
   private discGeo = new CircleGeometry(0.27, 40)
   /**
-   * 자리별 모니터 화면. planes 는 두 모니터의 내용 판(사람이 앉아 있을 때만 보인다), term 은 터미널 텍스처
+   * 자리별 모니터 화면. planes 는 듀얼 디스플레이의 내용 판(사람이 앉아 있을 때만 보인다), term 은 터미널 텍스처
    * (이미지는 terminalBase 와 공유), scroll 은 스크롤한 줄 수다.
    */
   private screens = new Map<string, { planes: Mesh[]; term: Texture | null; scroll: number }>()
@@ -820,14 +812,14 @@ export class OfficeScene {
   private typeColors = new Map<string, string>()
   /** 모니터 몸체 재질. 모든 모니터가 같은 색이라 하나를 나눠 쓴다 */
   private monitorBody: MeshStandardMaterial | null = null
-  /** 큰 창 밖 풍경 캔버스. 1분마다(updateWindowViews) 지금 시각으로 다시 그린다 */
-  private windowViews: { canvas: HTMLCanvasElement; tex: Texture }[] = []
-  private viewMinute = -1
+  /** 유리 밖의 입체감 있는 픽셀아트 파노라마 */
+  private exterior: ReturnType<typeof createSeoulPixelBackdrop> | null = null
+  private exteriorMinute = -1
   /** 방 조명(낮 밝기 기준). 밤이 될수록 줄여 램프 불빛이 드러나게 한다(updateDayNight) */
   private roomLights: { hemi: HemisphereLight; amb: AmbientLight; sun: DirectionalLight } | null = null
   /** 램프마다 갓 재질(밤에 빛남)과 갓 속 점광원 */
   private lamps: { shade: MeshStandardMaterial; light: PointLight }[] = []
-  /** 북쪽 벽 TV 화면. 사용량·언어가 바뀌거나(tvDirty) 분이 바뀌면 다시 그린다 */
+  /** 독립형 TV 화면. 사용량·언어가 바뀌거나(tvDirty) 분이 바뀌면 다시 그린다 */
   private tv: { canvas: HTMLCanvasElement; tex: Texture } | null = null
   private usage: UsageInfo | null = null
   private tvDirty = true
@@ -868,6 +860,7 @@ export class OfficeScene {
 
   constructor(canvas: HTMLCanvasElement, layer: HTMLElement) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true })
+    this.renderer.localClippingEnabled = true
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = PCFShadowMap
@@ -881,9 +874,9 @@ export class OfficeScene {
     this.labelRenderer.domElement.style.pointerEvents = 'none'
     layer.appendChild(this.labelRenderer.domElement)
 
-    // 아이소메트릭: 방위 45도, 고도 33도로 고정
+    // 사무실 안쪽 시야에 가까운 낮은 아이소메트릭: 방위 45도, 고도 18도
     const az = Math.PI / 4
-    const el = (33 * Math.PI) / 180
+    const el = (18 * Math.PI) / 180
     const dir = new Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el))
     this.camera.position.copy(this.target).addScaledVector(dir, 60)
     this.camera.lookAt(this.target)
@@ -907,52 +900,73 @@ export class OfficeScene {
   }
 
   private initLights() {
-    const hemi = new HemisphereLight('#fff3dc', '#7a5a45', 1.15)
-    const amb = new AmbientLight('#ffe9cc', 0.35)
+    const hemi = new HemisphereLight('#f7fbff', '#a4acb0', 1.35)
+    const amb = new AmbientLight('#ffffff', 0.55)
     this.scene.add(hemi, amb)
-    const sun = new DirectionalLight('#ffe2b4', 2.6)
+    const sun = new DirectionalLight('#fffaf3', 2.1)
     this.roomLights = { hemi, amb, sun }
     sun.position.copy(this.target).add(new Vector3(5.5, 11, 3.5))
     sun.target.position.copy(this.target)
     sun.castShadow = true
     sun.shadow.mapSize.set(2048, 2048)
     const cam = sun.shadow.camera
-    cam.left = -9
-    cam.right = 9
-    cam.top = 9
-    cam.bottom = -9
+    cam.left = -W
+    cam.right = W
+    cam.top = D
+    cam.bottom = -D
     cam.near = 1
     cam.far = 40
     sun.shadow.bias = -0.0004
     sun.shadow.normalBias = 0.03
-    sun.shadow.radius = 3
+    sun.shadow.radius = 4
     this.scene.add(sun, sun.target)
   }
 
   // ───────────────────────── 장면 구성 ─────────────────────────
 
+  private floorPatch(w: number, d: number, radius: number, color: string, x: number, z: number) {
+    const shape = new Shape()
+    const left = -w / 2, right = w / 2, bottom = -d / 2, top = d / 2
+    shape.moveTo(left + radius, bottom)
+    shape.lineTo(right - radius, bottom)
+    shape.quadraticCurveTo(right, bottom, right, bottom + radius)
+    shape.lineTo(right, top - radius)
+    shape.quadraticCurveTo(right, top, right - radius, top)
+    shape.lineTo(left + radius, top)
+    shape.quadraticCurveTo(left, top, left, top - radius)
+    shape.lineTo(left, bottom + radius)
+    shape.quadraticCurveTo(left, bottom, left + radius, bottom)
+    const mat = new MeshBasicMaterial({ color, transparent: true, opacity: 0.8, toneMapped: false })
+    const mesh = new Mesh(new ShapeGeometry(shape), mat)
+    mesh.rotation.x = -Math.PI / 2
+    mesh.position.set(x, 0.006, z)
+    this.scene.add(mesh)
+    return mat
+  }
+
   private build() {
     const a = this.assets!
     // 바닥
-    const tex = woodTexture()
+    const tex = stoneTexture()
     tex.repeat.set(W / FLOOR_TILE, D / FLOOR_TILE)
     const floor = new Mesh(
       new PlaneGeometry(W, D),
-      new MeshStandardMaterial({ map: tex, roughness: 0.85 }),
+      new MeshStandardMaterial({ map: tex, roughness: 1, metalness: 0 }),
     )
     floor.rotation.x = -Math.PI / 2
     floor.position.set(W / 2, 0, D / 2)
     floor.receiveShadow = true
     this.scene.add(floor)
+    const slab = new Mesh(new BoxGeometry(W + 0.03, 0.1, D + 0.03), new MeshStandardMaterial({ color: '#b5bdbf', roughness: 0.9 }))
+    slab.position.set(W / 2, -0.055, D / 2)
+    this.scene.add(slab)
 
-    // 팀 구역 바닥(세션이 배정되면 팀 색)
+    // Compact, softly rounded islands distinguish work pods and shared spaces.
+    this.floorPatch(3.35, 5.4, 0.45, '#dfccb0', 1.675, 8.6)
+    this.floorPatch(3.15, 3.65, 0.45, '#cbd9d2', 1.65, LAYOUT.rug.z)
     for (let z = 0; z < ZONE_COUNT; z++) {
       const o = ZONE_ORIGIN[z]
-      const mat = new MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.08 })
-      const mesh = new Mesh(new PlaneGeometry(ZONE_SIZE.w, ZONE_SIZE.d), mat)
-      mesh.rotation.x = -Math.PI / 2
-      mesh.position.set(o.x + 1.65, 0.008, o.z + 1.05)
-      this.scene.add(mesh)
+      const mat = this.floorPatch(ZONE_SIZE.w, ZONE_SIZE.d, 0.34, TEAM_FLOORS[z], o.x + 2.1, o.z + 0.75)
       this.zoneMats.push(mat)
 
       const el = document.createElement('div')
@@ -961,33 +975,11 @@ export class OfficeScene {
       el.style.display = 'none'
       const obj = new CSS2DObject(el)
       obj.center.set(0.5, 0.5)
-      obj.position.set(o.x + 1.65, 0.05, o.z + 2.72)
+      obj.position.set(o.x + 2.1, 0.05, o.z + 2.22)
       this.scene.add(obj)
       this.zoneLabels.push({ el, obj })
     }
 
-    // 벽 색
-    for (const name of WALL_MODELS) {
-      a.furniture.get(name)?.root.traverse((o) => {
-        const m = (o as Mesh).material as Material | undefined
-        if (m && (m as MeshStandardMaterial).name === '_defaultMat') {
-          const c = (m as MeshStandardMaterial).clone()
-          c.color.copy(WALL_COLOR)
-          ;(o as Mesh).material = c
-        }
-      })
-    }
-    // 창문 유리: 원래는 반투명 회녹색이라 바깥의 어두운 배경이 비쳐 칙칙하다. 덜 비치는 하늘빛 파랑으로 은은하게 빛나게 한다
-    a.furniture.get('wallWindow')?.root.traverse((o) => {
-      const m = (o as Mesh).material as MeshStandardMaterial | undefined
-      if (m?.name !== 'glass') return
-      const c = m.clone()
-      c.color.set(WINDOW_GLASS)
-      c.opacity = 0.92
-      c.emissive = new Color(WINDOW_GLASS)
-      c.emissiveIntensity = 0.35
-      ;(o as Mesh).material = c
-    })
     // 소파 천과 러그. 모델마다 따로 읽은 재질이라 같은 재질 이름('carpet')이어도 서로 번지지 않는다
     for (const name of SOFA_MODELS) {
       a.furniture.get(name)?.root.traverse((o) => {
@@ -1011,53 +1003,33 @@ export class OfficeScene {
     })
 
     for (const it of LAYOUT.items) this.placeItem(it)
-    this.placeWallCorner()
     this.placeShelfBooks()
     this.placeTrophies()
     this.placeEspresso()
+    this.placeBarista()
+    this.placeCafeDetails()
+    this.placeElevator()
     this.placeTv()
     for (const f of LAYOUT.frames) this.placeFrame(f)
+    this.exterior = createSeoulPixelBackdrop(this.renderer.capabilities.getMaxAnisotropy())
     for (const w of LAYOUT.windows) this.placeWindow(w)
-    // 캐릭터가 들어오기 전, 바닥·벽·가구만 있을 때 방의 실제 범위(벽 두께 포함)를 재 화면 맞춤에 쓴다
-    this.roomBox = new Box3().setFromObject(this.scene)
+    // 건물 외곽으로 화면을 맞춰 소품이나 캐릭터 자세가 화면 배율을 바꾸지 않게 한다.
+    this.roomBox = new Box3(
+      new Vector3(-0.08, -0.12, -0.08),
+      new Vector3(W + 0.08, 1.29 * WALL_SY, D + 0.08),
+    )
+    this.scene.background = new Color('#e8eceb')
     this.fit()
   }
 
-  /**
-   * 북쪽(문 쪽)·서쪽(창문 쪽) 벽이 만나는 모서리 기둥. 벽 조각은 방 안쪽 면(x=0, z=0)에 맞춰 바깥으로 두께만큼 놓이므로
-   * 모서리 바깥의 두께×두께 자리가 비어 위에서 보면 홈처럼 패여 보인다. 같은 두께·높이·색의 기둥으로 메운다.
-   */
-  private placeWallCorner() {
-    const wall = this.assets!.furniture.get('wall')
-    if (!wall) return
-    let mat: Material | null = null
-    wall.root.traverse((o) => {
-      const m = (o as Mesh).material as MeshStandardMaterial | undefined
-      if (!mat && m?.color?.equals(WALL_COLOR)) mat = m
-    })
-    if (!mat) return
-    const t = wall.size.z
-    const height = wall.size.y * WALL_SY
-    const geo = new BoxGeometry(t, height, t)
-    this.frameDisposables.push(geo)
-    const post = new Mesh(geo, mat)
-    post.position.set(-t / 2, height / 2, -t / 2)
-    post.castShadow = true
-    post.receiveShadow = true
-    this.scene.add(post)
-  }
-
-  /**
-   * 탕비실 에스프레소 머신. 가구 모음에 커피머신 모델이 하나뿐이라 카페형 머신을 도형으로 만든다:
-   * 흰색 몸체 + 위 컵 데우는 판(은색 테 + 작은 컵 둘) + 앞쪽 은색 그룹헤드와 검은 손잡이 포터필터 + 물받이 + 에스프레소 잔.
-   * 크기는 가로 0.34 · 높이 0.36 · 깊이 0.3 쯤(상판 위). 앞면이 +z(방 안쪽)다
-   */
+  /** Slayer Espresso 2-group: low black body, metal X frame and wood brew paddles. */
   private placeEspresso() {
     const { x, y, z } = LAYOUT.espresso
-    const body = new MeshStandardMaterial({ color: '#f3f1ec', roughness: 0.35 })
+    const body = new MeshStandardMaterial({ color: '#252b2c', metalness: 0.25, roughness: 0.4 })
     const steel = new MeshStandardMaterial({ color: '#c9ced4', metalness: 0.4, roughness: 0.3 })
     const dark = new MeshStandardMaterial({ color: '#2b2b2e', roughness: 0.6 })
     const red = new MeshStandardMaterial({ color: '#c0392b', roughness: 0.5 })
+    const wood = new MeshStandardMaterial({ color: '#b58c5e', roughness: 0.65 })
     const cupMat = new MeshStandardMaterial({ color: '#f4efe6', roughness: 0.6 })
     const coffee = new MeshStandardMaterial({ color: '#4a2c1c', roughness: 0.4 })
     const g = new Group()
@@ -1077,24 +1049,448 @@ export class OfficeScene {
       g.add(m)
       return m
     }
-    this.frameDisposables.push(body, steel, dark, red, cupMat, coffee)
-    box(0.34, 0.03, 0.3, body, 0, 0, 0) // 받침
-    box(0.34, 0.3, 0.22, body, 0, 0.03, -0.04) // 몸체(뒤쪽)
-    box(0.34, 0.012, 0.22, steel, 0, 0.33, -0.04) // 컵 데우는 판 테
-    box(0.3, 0.035, 0.08, body, 0, 0.19, 0.1) // 앞으로 나온 그룹헤드 받침
-    cyl(0.032, 0.028, 0.03, steel, 0, 0.16, 0.11) // 그룹헤드
-    cyl(0.03, 0.03, 0.02, dark, 0, 0.14, 0.11) // 포터필터 바스켓
-    const handle = box(0.022, 0.018, 0.12, dark, 0, 0.142, 0.19) // 포터필터 손잡이
-    handle.rotation.x = 0.15
-    box(0.26, 0.012, 0.09, steel, 0, 0.03, 0.1) // 물받이
-    box(0.03, 0.012, 0.012, red, 0.12, 0.27, 0.075) // 빨간 스위치
-    cyl(0.018, 0.014, 0.03, cupMat, 0, 0.042, 0.11) // 에스프레소 잔
-    cyl(0.016, 0.016, 0.002, coffee, 0, 0.069, 0.11)
-    cyl(0.017, 0.013, 0.026, cupMat, -0.09, 0.342, -0.06) // 위에 엎어 둔 컵들
-    cyl(0.017, 0.013, 0.026, cupMat, 0.06, 0.342, -0.08)
+    this.frameDisposables.push(body, steel, dark, red, cupMat, coffee, wood)
+    // https://slayerespresso.com/product/espresso-v3/
+    box(0.68, 0.19, 0.215, body, 0, 0.135, -0.06)
+    box(0.68, 0.018, 0.25, steel, 0, 0.325, -0.045)
+    for (const side of [-1, 1]) {
+      box(0.025, 0.195, 0.23, body, side * 0.3275, 0.13, -0.055)
+      // Exposed crossed supports form Slayer's distinctive side silhouette.
+      for (const angle of [-0.72, 0.72]) {
+        const frame = box(0.026, 0.27, 0.029, steel, side * 0.356, 0.015, 0)
+        frame.rotation.x = angle
+      }
+      for (const z of [-0.10, 0.10]) cyl(0.018, 0.021, 0.03, dark, side * 0.35, 0, z)
+      box(0.02, 0.035, 0.25, wood, side * 0.33, 0.343, -0.045)
+      const knob = cyl(0.025, 0.025, 0.025, wood, side * 0.30, 0.24, 0.07)
+      knob.rotation.x = Math.PI / 2
+      const wand = box(0.012, 0.13, 0.012, steel, side * 0.30, 0.09, 0.13)
+      wand.rotation.z = side * 0.2
+    }
+    box(0.66, 0.016, 0.018, wood, 0, 0.35, -0.16)
+    box(0.65, 0.018, 0.16, steel, 0, 0.05, 0.12)
+    for (let i = -9; i <= 9; i++) box(0.004, 0.003, 0.135, dark, i * 0.032, 0.068, 0.12)
+    for (let i = 0; i < LAYOUT.espresso.groups; i++) {
+      const gx = (i - (LAYOUT.espresso.groups - 1) / 2) * 0.25
+      cyl(0.034, 0.030, 0.04, steel, gx, 0.155, 0.115)
+      cyl(0.03, 0.028, 0.022, dark, gx, 0.133, 0.115)
+      const handle = box(0.025, 0.022, 0.125, wood, gx, 0.137, 0.195)
+      handle.rotation.x = 0.12
+      cyl(0.018, 0.018, 0.018, steel, gx, 0.255, 0.085)
+      const paddle = box(0.11, 0.018, 0.042, wood, gx - 0.018, 0.273, 0.11)
+      paddle.rotation.y = i === 0 ? 0.12 : -0.12
+      const gauge = new Mesh(new CircleGeometry(0.022, 20), cupMat)
+      gauge.position.set(gx, 0.225, 0.052)
+      const rim = new Mesh(new RingGeometry(0.022, 0.025, 20), steel)
+      rim.position.copy(gauge.position)
+      const needle = box(0.002, 0.016, 0.002, dark, gx, 0.219, 0.054)
+      needle.rotation.z = -0.55
+      g.add(gauge, rim)
+      this.frameDisposables.push(gauge.geometry, rim.geometry)
+      cyl(0.020, 0.015, 0.034, cupMat, gx, 0.072, 0.12)
+      cyl(0.018, 0.018, 0.002, coffee, gx, 0.105, 0.12)
+      cyl(0.019, 0.015, 0.029, cupMat, gx, 0.343, -0.06)
+    }
+    const brandCanvas = document.createElement('canvas')
+    brandCanvas.width = 512
+    brandCanvas.height = 64
+    const context = brandCanvas.getContext('2d')!
+    context.font = 'bold 42px Arial, sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillStyle = '#e7eceb'
+    context.fillText('S L A Y E R', 256, 34)
+    const brandTexture = new CanvasTexture(brandCanvas)
+    brandTexture.colorSpace = SRGBColorSpace
+    const brandMaterial = new MeshBasicMaterial({ map: brandTexture, transparent: true, depthWrite: false, toneMapped: false })
+    for (const side of [-1, 1]) {
+      const brand = new Mesh(new PlaneGeometry(0.34, 0.043), brandMaterial)
+      brand.position.set(0, side > 0 ? 0.314 : 0.22, side > 0 ? 0.085 : -0.169)
+      if (side < 0) brand.rotation.y = Math.PI
+      g.add(brand)
+      this.frameDisposables.push(brand.geometry)
+    }
+    this.frameDisposables.push(brandTexture, brandMaterial)
+    g.rotation.y = LAYOUT.espresso.rot
     g.position.set(x, y, z)
     g.traverse((o) => ((o as Mesh).castShadow = true))
     this.scene.add(g)
+  }
+
+  private placeElevator() {
+    const collarMaterial = new MeshStandardMaterial({ color: '#c7d0d2', metalness: 0.45, roughness: 0.38 })
+    const collar = new Mesh(new RingGeometry(0.71, 0.86, 64), collarMaterial)
+    collar.rotation.x = -Math.PI / 2
+    collar.position.set(ELEVATOR.x, 0.012, ELEVATOR.z)
+    collar.receiveShadow = true
+    this.scene.add(collar)
+    const silver = new MeshStandardMaterial({ color: '#c7d6db', metalness: 0.45, roughness: 0.32, clippingPlanes: [FLOOR_CLIP], clipShadows: true })
+    const glass = new MeshStandardMaterial({ color: '#c7e7ec', transparent: true, opacity: 0.15, roughness: 0.08, metalness: 0.05, side: DoubleSide, depthWrite: false, clippingPlanes: [FLOOR_CLIP] })
+    const pod = new Group()
+    const shell = new Mesh(new CylinderGeometry(0.68, 0.68, 1.28, 64, 1, true, Math.PI / 2 + 0.47, Math.PI * 2 - 0.94), glass)
+    shell.position.y = 0.71
+    const platform = new Mesh(new CylinderGeometry(0.70, 0.70, 0.065, 64), silver)
+    platform.position.y = 0.033
+    pod.add(shell, platform)
+    for (const y of [0.07, 1.35]) {
+      const ring = new Mesh(new TorusGeometry(0.68, 0.016, 6, 64), silver)
+      ring.rotation.x = Math.PI / 2
+      ring.position.y = y
+      pod.add(ring)
+    }
+    for (const angle of [Math.PI / 2 + 0.49, Math.PI, Math.PI * 1.5, Math.PI * 2]) {
+      const post = new Mesh(new CylinderGeometry(0.008, 0.008, 1.28, 6), silver)
+      post.position.set(Math.sin(angle) * 0.68, 0.71, Math.cos(angle) * 0.68)
+      pod.add(post)
+    }
+    const signal = new MeshStandardMaterial({ color: '#a6c8c1', emissive: '#7fc6b8', emissiveIntensity: 0.4 })
+    const light = new Mesh(new RingGeometry(0.75, 0.78, 64), signal)
+    light.rotation.x = -Math.PI / 2
+    light.position.set(ELEVATOR.x, 0.015, ELEVATOR.z)
+    this.scene.add(light, pod)
+    this.elevator = { motion: new FloorElevator(), pod, signal }
+    this.updateElevator(0)
+  }
+
+  private updateElevator(dt: number) {
+    const lift = this.elevator
+    if (!lift) return
+    let requested = false
+    let passengers = false
+    let arrivalsInside = false
+    for (const ch of this.chars.values()) {
+      if (ch.removed) continue
+      if (ch.ridingDown) { passengers = true; continue }
+      if (ch.entering && !ch.leaving && ch.delay <= 0.5) {
+        requested = true
+        if (ch.delay <= 0 && Math.hypot(ch.x - DOOR.x, ch.z - DOOR.z) < 1) arrivalsInside = true
+      }
+      if (ch.leaving && Math.hypot(ch.x - DOOR.x, ch.z - DOOR.z) < 1.8) requested = true
+    }
+    lift.motion.update(dt, requested, passengers && !arrivalsInside)
+    lift.pod.position.set(ELEVATOR.x, lift.motion.height, ELEVATOR.z)
+    lift.signal.emissiveIntensity = lift.motion.state === 'hidden' ? 0.1 : 0.7
+    for (const ch of this.chars.values()) {
+      if (ch.ridingDown && lift.motion.state === 'hidden') ch.removed = true
+    }
+  }
+
+  private waitingForElevator(ch: Char) {
+    if (ch.ridingDown) return true
+    if (!this.elevator || this.elevator.motion.ready) return false
+    return ch.entering || (ch.goal === 'door' && ch.x <= ELEVATOR.frontX + 0.35 && ch.x > ELEVATOR.frontX && Math.abs(ch.z - ELEVATOR.z) < 0.6)
+  }
+
+  /** Café staff remain in place independently of incoming agent sessions. */
+  private placeBarista() {
+    const modelIdx = charOf('female-d')
+    const def = this.assets!.characters[modelIdx]
+    const model = cloneSkinned(def.root)
+    model.scale.setScalar(CHAR_SCALE)
+    model.position.set(LAYOUT.barista.x, 0, LAYOUT.barista.z)
+    model.rotation.y = LAYOUT.barista.yaw
+    const clothes = this.clothesTexture(modelIdx, '#596f60')
+    model.traverse((o) => {
+      const mesh = o as Mesh
+      if (!mesh.isMesh) return
+      if (mesh.name === 'body-mesh') {
+        const material = (mesh.material as MeshStandardMaterial).clone()
+        material.map = clothes
+        mesh.material = material
+      }
+      mesh.castShadow = true
+      mesh.frustumCulled = false
+    })
+    const apron = new Mesh(new BoxGeometry(0.23, 0.27, 0.035), new MeshStandardMaterial({ color: '#424e43', roughness: 0.95 }))
+    apron.position.set(0, 0.32, 0.12)
+    model.add(apron)
+    this.scene.add(model)
+    const mixer = new AnimationMixer(model)
+    mixer.clipAction(def.clips.idle).play()
+    const label = document.createElement('div')
+    label.className = 'ao-zone'
+    label.style.setProperty('--team', '#768b69')
+    label.textContent = t().barista
+    const marker = new CSS2DObject(label)
+    marker.position.set(LAYOUT.barista.x, CHAR_HEIGHT + 0.10, LAYOUT.barista.z)
+    this.scene.add(marker)
+    this.barista = { mixer, label }
+  }
+
+  private placeCafeDetails() {
+    const dark = new MeshStandardMaterial({ color: '#30383c', roughness: 0.55 })
+    // Parallel stainless counters with a single-person staff aisle.
+    const bodyMat = new MeshStandardMaterial({ color: '#d0d9de', metalness: 0.35, roughness: 0.38 })
+    const topMat = new MeshStandardMaterial({ color: '#e7edef', metalness: 0.42, roughness: 0.28 })
+    const topY = LAYOUT.espresso.y
+    const counter = (x: number, z: number, width: number, depth: number) => {
+      const body = new Mesh(new BoxGeometry(width, topY - 0.035, depth), bodyMat)
+      body.position.set(x, (topY - 0.035) / 2, z)
+      const top = new Mesh(new BoxGeometry(width, 0.035, depth), topMat)
+      top.position.set(x, topY - 0.0175, z)
+      body.castShadow = top.castShadow = true
+      body.receiveShadow = top.receiveShadow = true
+      this.scene.add(body, top)
+    }
+    const wingDepth = CAFE.frontZ - CAFE.startZ
+    counter(CAFE.cupX, CAFE.startZ + wingDepth / 2, CAFE.counterDepth, wingDepth)
+    // Split the machine counter around a real opening instead of laying a basin on top.
+    const sinkX = CAFE.counterX
+    const sinkZ = 10.1
+    const sinkW = 0.68
+    const sinkD = 0.32
+    const openingW = sinkD
+    const openingD = sinkW
+    const sinkAssembly = new Group()
+    const sinkLeft = sinkX - openingW / 2
+    const sinkRight = sinkX + openingW / 2
+    const barLeft = CAFE.counterX - CAFE.counterDepth / 2
+    const barRight = CAFE.counterX + CAFE.counterDepth / 2
+    counter((barLeft + sinkLeft) / 2, CAFE.startZ + wingDepth / 2, sinkLeft - barLeft, wingDepth)
+    counter((sinkRight + barRight) / 2, CAFE.startZ + wingDepth / 2, barRight - sinkRight, wingDepth)
+    const beforeSink = sinkZ - openingD / 2 - CAFE.startZ
+    const afterSink = CAFE.frontZ - sinkZ - openingD / 2
+    counter(sinkX, CAFE.startZ + beforeSink / 2, openingW, beforeSink)
+    counter(sinkX, CAFE.frontZ - afterSink / 2, openingW, afterSink)
+    const cabinet = new Mesh(new BoxGeometry(sinkW, topY - 0.13, sinkD), bodyMat)
+    cabinet.position.set(sinkX, (topY - 0.13) / 2, sinkZ)
+    const basinMat = new MeshStandardMaterial({ color: '#87969f', metalness: 0.5, roughness: 0.28 })
+    const basin = new Mesh(new BoxGeometry(sinkW, 0.012, sinkD), basinMat)
+    basin.position.set(sinkX, topY - 0.12, sinkZ)
+    sinkAssembly.add(cabinet, basin)
+    for (const side of [-1, 1]) {
+      const wall = new Mesh(new BoxGeometry(0.008, 0.12, sinkD), basinMat)
+      wall.position.set(sinkX + side * (sinkW / 2 - 0.004), topY - 0.06, sinkZ)
+      const end = new Mesh(new BoxGeometry(sinkW, 0.12, 0.008), basinMat)
+      end.position.set(sinkX, topY - 0.06, sinkZ + side * (sinkD / 2 - 0.004))
+      sinkAssembly.add(wall, end)
+    }
+    const drain = new Mesh(new CylinderGeometry(0.028, 0.028, 0.003, 20), dark)
+    drain.position.set(sinkX, topY - 0.112, sinkZ)
+    const tapStem = new Mesh(new CylinderGeometry(0.014, 0.014, 0.14, 12), topMat)
+    tapStem.position.set(sinkX, topY + 0.07, sinkZ - 0.20)
+    const tapArch = new Mesh(new TorusGeometry(0.085, 0.014, 8, 24, Math.PI), topMat)
+    tapArch.rotation.y = Math.PI / 2
+    tapArch.position.set(sinkX, topY + 0.14, sinkZ - 0.115)
+    const spout = new Mesh(new CylinderGeometry(0.014, 0.014, 0.045, 12), topMat)
+    spout.position.set(sinkX, topY + 0.1175, sinkZ - 0.03)
+    sinkAssembly.add(drain, tapStem, tapArch, spout)
+    for (const part of sinkAssembly.children) {
+      part.position.x -= sinkX
+      part.position.z -= sinkZ
+    }
+    sinkAssembly.position.set(sinkX, 0, sinkZ)
+    sinkAssembly.rotation.y = Math.PI / 2
+    this.scene.add(sinkAssembly)
+    // E65S-inspired espresso grinders, facing the barista like the machine.
+    // https://www.mahlkoenig.com/products/e65s
+    const hopperGlass = new MeshStandardMaterial({ color: '#c8dde1', transparent: true, opacity: 0.4, roughness: 0.15, depthWrite: false })
+    const beans = new MeshStandardMaterial({ color: '#59402e', roughness: 0.9 })
+    const screen = new MeshStandardMaterial({ color: '#82c6dd', emissive: '#5aafce', emissiveIntensity: 0.3, roughness: 0.3 })
+    for (const dz of [0.55, 0.81]) {
+      const grinder = new Group()
+      const base = new Mesh(new BoxGeometry(0.17, 0.025, 0.20), dark)
+      base.position.set(0, 0.013, 0.025)
+      const body = new Mesh(new CylinderGeometry(0.069, 0.077, 0.235, 16), dark)
+      body.position.y = 0.14
+      const collar = new Mesh(new CylinderGeometry(0.074, 0.074, 0.02, 20), topMat)
+      collar.position.y = 0.263
+      const hopper = new Mesh(new CylinderGeometry(0.082, 0.043, 0.16, 24), hopperGlass)
+      hopper.position.y = 0.355
+      const fill = new Mesh(new CylinderGeometry(0.068, 0.038, 0.10, 20), beans)
+      fill.position.y = 0.333
+      const lid = new Mesh(new CylinderGeometry(0.085, 0.085, 0.012, 24), dark)
+      lid.position.y = 0.441
+      const displayFrame = new Mesh(new BoxGeometry(0.10, 0.07, 0.023), dark)
+      displayFrame.position.set(0, 0.207, 0.069)
+      const display = new Mesh(new PlaneGeometry(0.073, 0.041), screen)
+      display.position.set(0, 0.21, 0.082)
+      const chute = new Mesh(new BoxGeometry(0.035, 0.035, 0.052), topMat)
+      chute.position.set(0, 0.144, 0.085)
+      grinder.add(base, body, collar, hopper, fill, lid, displayFrame, display, chute)
+      for (const side of [-1, 1]) {
+        const fork = new Mesh(new BoxGeometry(0.012, 0.012, 0.07), topMat)
+        fork.position.set(side * 0.027, 0.087, 0.084)
+        grinder.add(fork)
+      }
+      this.addGrinderSideLogo(grinder, 0.078, 0.15, 0.065)
+      grinder.rotation.y = Math.PI / 2
+      grinder.position.set(CAFE.counterX, LAYOUT.espresso.y, CAFE.z + dz)
+      grinder.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
+      this.scene.add(grinder)
+    }
+    this.placeBrewingZone()
+
+  }
+
+  /** EK43-inspired tall grinder and three pour-over dripper/server sets. */
+  private placeBrewingZone() {
+    // https://www.mahlkoenig.com/en-de/products/ek43
+    const black = new MeshStandardMaterial({ color: '#292f30', roughness: 0.6 })
+    const metal = new MeshStandardMaterial({ color: '#b9c5c9', metalness: 0.5, roughness: 0.35 })
+    const ceramic = new MeshStandardMaterial({ color: '#f5f2e9', roughness: 0.6, side: DoubleSide })
+    const glass = new MeshStandardMaterial({ color: '#c9e6e8', transparent: true, opacity: 0.42, roughness: 0.1, side: DoubleSide, depthWrite: false })
+    const beans = new MeshStandardMaterial({ color: '#62432f', roughness: 0.9 })
+    const grinder = new Group()
+    const base = new Mesh(new BoxGeometry(0.23, 0.025, 0.26), black)
+    base.position.y = 0.013
+    const stand = new Mesh(new BoxGeometry(0.115, 0.23, 0.14), black)
+    stand.position.set(0, 0.14, -0.03)
+    const motor = new Mesh(new CylinderGeometry(0.105, 0.105, 0.23, 24), black)
+    motor.rotation.x = Math.PI / 2
+    motor.position.y = 0.28
+    const scale = new Mesh(new CircleGeometry(0.084, 24), ceramic)
+    scale.position.set(0, 0.28, 0.117)
+    const dial = new Mesh(new CylinderGeometry(0.046, 0.046, 0.085, 24), black)
+    dial.rotation.x = Math.PI / 2
+    // The adjustment knob projects beyond the white scale; its side profile stays visible.
+    dial.position.set(0, 0.28, 0.16)
+    const dialFace = new Mesh(new CylinderGeometry(0.038, 0.038, 0.009, 24), black)
+    dialFace.rotation.x = Math.PI / 2
+    dialFace.position.set(0, 0.28, 0.207)
+    const pointer = new Mesh(new BoxGeometry(0.005, 0.018, 0.003), ceramic)
+    pointer.position.set(0, 0.304, 0.213)
+    grinder.add(base, stand, motor, scale, dial, dialFace, pointer)
+    for (let i = 0; i < 12; i++) {
+      const angle = i * Math.PI / 6
+      const tick = new Mesh(new BoxGeometry(0.003, 0.009, 0.002), black)
+      tick.position.set(Math.sin(angle) * 0.066, 0.28 + Math.cos(angle) * 0.066, 0.119)
+      tick.rotation.z = -angle
+      grinder.add(tick)
+    }
+    const hopper = new Mesh(new CylinderGeometry(0.069, 0.042, 0.16, 24), glass)
+    hopper.position.y = 0.445
+    const fill = new Mesh(new CylinderGeometry(0.058, 0.038, 0.105, 20), beans)
+    fill.position.y = 0.422
+    const lid = new Mesh(new CylinderGeometry(0.074, 0.074, 0.014, 24), black)
+    lid.position.y = 0.532
+    const chute = new Mesh(new BoxGeometry(0.031, 0.065, 0.04), metal)
+    chute.position.set(0, 0.16, 0.115)
+    const dosingCup = new Mesh(new CylinderGeometry(0.033, 0.026, 0.06, 16), metal)
+    dosingCup.position.set(0, 0.052, 0.115)
+    grinder.add(hopper, fill, lid, chute, dosingCup)
+    this.addGrinderSideLogo(grinder, 0.108, 0.28, 0.08)
+    grinder.rotation.y = -Math.PI / 2
+    grinder.position.set(CAFE.cupX, LAYOUT.espresso.y, 8.14)
+    grinder.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
+    this.scene.add(grinder)
+    // Acaia-inspired scales sit flush in the stainless counter, one beneath each server.
+    const scaleFace = new MeshStandardMaterial({ color: '#fafbfa', roughness: 0.32 })
+    const displayCanvas = document.createElement('canvas')
+    displayCanvas.width = 512
+    displayCanvas.height = 96
+    const displayCtx = displayCanvas.getContext('2d')!
+    displayCtx.fillStyle = '#fafbfa'
+    displayCtx.fillRect(0, 0, 512, 96)
+    displayCtx.fillStyle = '#7d8b91'
+    displayCtx.textAlign = 'center'
+    displayCtx.textBaseline = 'middle'
+    displayCtx.font = '44px monospace'
+    displayCtx.fillText('00:24   250.0', 256, 42)
+    displayCtx.fillStyle = '#a2aaad'
+    displayCtx.font = '18px sans-serif'
+    displayCtx.fillText('acaia', 256, 80)
+    const displayTexture = new CanvasTexture(displayCanvas)
+    displayTexture.colorSpace = SRGBColorSpace
+    const displayMaterial = new MeshBasicMaterial({ map: displayTexture, toneMapped: false })
+    for (const z of [8.52, 8.86, 9.20]) {
+      const scale = new Group()
+      // The casing is embedded below the worktop; only a thin steel seam and white face show.
+      const bezel = new Mesh(new BoxGeometry(0.28, 0.018, 0.31), metal)
+      bezel.position.y = -0.007
+      const face = new Mesh(new BoxGeometry(0.265, 0.016, 0.295), scaleFace)
+      face.position.y = -0.005
+      const display = new Mesh(new PlaneGeometry(0.225, 0.042), displayMaterial)
+      display.rotation.x = -Math.PI / 2
+      display.position.set(0, 0.0035, 0.113)
+      scale.add(bezel, face, display)
+      scale.rotation.y = -Math.PI / 2
+      scale.position.set(CAFE.cupX - 0.08, LAYOUT.espresso.y, z)
+      this.scene.add(scale)
+      const set = new Group()
+      const profile = [[0.045,0.008],[0.067,0.02],[0.077,0.065],[0.065,0.105],[0.041,0.137]].map(([r,y]) => new Vector2(r,y))
+      const server = new Mesh(new LatheGeometry(profile, 32), glass)
+      const coffee = new Mesh(new CylinderGeometry(0.061, 0.055, 0.04, 24), beans)
+      coffee.position.y = 0.041
+      const rim = new Mesh(new TorusGeometry(0.041, 0.004, 6, 24), glass)
+      rim.rotation.x = Math.PI / 2
+      rim.position.y = 0.137
+      const handle = new Mesh(new TorusGeometry(0.035, 0.007, 8, 20, Math.PI * 1.6), black)
+      handle.position.set(0.076, 0.08, 0)
+      const dripper = new Mesh(new CylinderGeometry(0.067, 0.022, 0.08, 24, 1, true), ceramic)
+      dripper.position.y = 0.19
+      const plate = new Mesh(new CylinderGeometry(0.054, 0.054, 0.008, 24), ceramic)
+      plate.position.y = 0.147
+      const filter = new Mesh(new CylinderGeometry(0.058, 0.019, 0.07, 24, 1, true), new MeshStandardMaterial({ color: '#fffdf4', roughness: 1, side: DoubleSide }))
+      filter.position.y = 0.197
+      set.add(server, coffee, rim, handle, dripper, plate, filter)
+      set.position.set(CAFE.cupX - 0.055, LAYOUT.espresso.y + 0.003, z)
+      set.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
+      this.scene.add(set)
+    }
+    // Fellow Stagg EKG-inspired kettle in the free space at the end of the brewing bar.
+    // https://fellowproducts.com/products/stagg-ekg-electric-pour-over-kettle
+    const kettle = new Group()
+    const matte = new MeshStandardMaterial({ color: '#252b2d', roughness: 0.75 })
+    const wood = new MeshStandardMaterial({ color: '#ad835c', roughness: 0.7 })
+    const kettleBase = new Mesh(new RoundedBoxGeometry(0.26, 0.026, 0.25, 2, 0.009), matte)
+    kettleBase.position.y = 0.013
+    const kettleBody = new Mesh(new CylinderGeometry(0.063, 0.091, 0.135, 32), matte)
+    kettleBody.position.set(0, 0.094, -0.015)
+    const kettleLid = new Mesh(new CylinderGeometry(0.064, 0.065, 0.012, 32), matte)
+    kettleLid.position.set(0, 0.168, -0.015)
+    const knob = new Mesh(new CylinderGeometry(0.018, 0.022, 0.024, 16), wood)
+    knob.position.set(0, 0.185, -0.015)
+    const tube = (points: number[][], radius: number, material: Material) => new Mesh(
+      new TubeGeometry(new CatmullRomCurve3(points.map(([x, y, z]) => new Vector3(x, y, z))), 24, radius, 8, false), material,
+    )
+    const spout = tube([[-0.075,0.06,-0.015],[-0.12,0.085,-0.015],[-0.155,0.18,-0.015],[-0.20,0.20,-0.015],[-0.225,0.19,-0.015]], 0.009, matte)
+    const handle = tube([[0.057,0.147,-0.015],[0.12,0.16,-0.015],[0.145,0.12,-0.015],[0.13,0.055,-0.015],[0.08,0.043,-0.015]], 0.017, wood)
+    const kettleDial = new Mesh(new CylinderGeometry(0.022, 0.022, 0.014, 20), matte)
+    kettleDial.position.set(0.083, 0.033, 0.086)
+    const screen = new Mesh(new PlaneGeometry(0.07, 0.026), new MeshStandardMaterial({ color: '#c0d8de', emissive: '#8aafb8', emissiveIntensity: 0.2 }))
+    screen.rotation.x = -Math.PI / 2
+    screen.position.set(-0.04, 0.027, 0.088)
+    kettle.add(kettleBase, kettleBody, kettleLid, knob, spout, handle, kettleDial, screen)
+    kettle.rotation.y = Math.PI
+    kettle.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
+    for (const z of [9.7, 10.15]) {
+      const station = kettle.clone(true)
+      station.position.set(CAFE.cupX, LAYOUT.espresso.y, z)
+      this.scene.add(station)
+    }
+  }
+
+  /** Small red crown-inspired maker marks on both sides of the coffee grinders. */
+  private addGrinderSideLogo(grinder: Group, halfWidth: number, y: number, size: number) {
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 256
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = '#e9363f'
+    ctx.beginPath()
+    ctx.moveTo(47, 60)
+    ctx.lineTo(88, 94)
+    ctx.lineTo(128, 36)
+    ctx.lineTo(168, 94)
+    ctx.lineTo(209, 60)
+    ctx.lineTo(187, 157)
+    ctx.lineTo(69, 157)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillRect(69, 169, 118, 15)
+    ctx.textAlign = 'center'
+    ctx.font = 'bold 22px Arial, sans-serif'
+    ctx.fillText('MAHLKÖNIG', 128, 220)
+    const texture = new CanvasTexture(canvas)
+    texture.colorSpace = SRGBColorSpace
+    const material = new MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false })
+    for (const side of [-1, 1]) {
+      const badge = new Mesh(new PlaneGeometry(size, size), material)
+      badge.position.set(side * halfWidth, y, 0)
+      badge.rotation.y = side * Math.PI / 2
+      grinder.add(badge)
+    }
   }
 
   /**
@@ -1169,57 +1565,73 @@ export class OfficeScene {
   }
 
   /**
-   * 벽면에 붙이는 큰 창: 하늘빛 유리판과 얇은 나무 창틀(위·아래·양옆, 아래는 창턱처럼 조금 더 두껍고 튀어나오게).
-   * 창틀 색은 벽 모델의 나무 재질(걸레받이)을 그대로 쓴다. 이동 막힘에는 넣지 않는 벽 장식이다
+   * 바닥부터 천장까지 이어지는 파노라마 창. 얇은 실버 알루미늄 프레임으로 빌딩 파사드처럼 만든다.
+   * 이동 막힘에는 넣지 않는 벽 장식이다.
    */
   private placeWindow(w: WallWindow) {
-    let wood: Material | null = null
-    this.assets!.furniture.get('wall')?.root.traverse((o) => {
-      const m = (o as Mesh).material as MeshStandardMaterial | undefined
-      if (!wood && m?.name === 'wood') wood = m
-    })
-    const frameMat = wood ?? new MeshStandardMaterial({ color: '#e5b98a', roughness: 0.8 })
-    // 유리에는 창밖 풍경(windowView)을 그린다. 조명을 받지 않는 재질이라 실내 그림자와 상관없이 하늘 색 그대로 보인다
-    const view = document.createElement('canvas')
-    view.width = 768
-    view.height = Math.round((768 * (w.h - 0.07)) / (w.w - 0.07))
-    const viewTex = new CanvasTexture(view)
-    viewTex.colorSpace = SRGBColorSpace
-    this.windowViews.push({ canvas: view, tex: viewTex })
-    const glassMat = new MeshBasicMaterial({ map: viewTex, toneMapped: false })
-    this.frameDisposables.push(viewTex)
-    const bar = 0.035 // 창틀 두께
-    const depth = 0.03
-    const glassGeo = new PlaneGeometry(w.w - 2 * bar, w.h - 2 * bar)
-    const sideGeo = new BoxGeometry(bar, w.h, depth)
-    const topGeo = new BoxGeometry(w.w, bar, depth)
-    const sillGeo = new BoxGeometry(w.w + 0.06, bar * 1.4, depth * 2)
-    this.frameDisposables.push(glassMat, glassGeo, sideGeo, topGeo, sillGeo)
+    const frameMat = new MeshBasicMaterial({ color: '#bfcbd2', toneMapped: false })
+    const glassMat = new MeshStandardMaterial({ color: '#b8dce7', transparent: true, opacity: 0.055, roughness: 0.12, metalness: 0.2, side: DoubleSide, depthWrite: false })
+    const bar = 0.012
+    const depth = 0.065
+    const glassGeo = new PlaneGeometry(w.w - bar * 2, w.h - bar * 2)
+    const verticalGeo = new BoxGeometry(bar * 0.72, w.h, depth)
+    const horizontalGeo = new BoxGeometry(w.w, bar, depth)
+    this.frameDisposables.push(frameMat, glassMat, glassGeo, verticalGeo, horizontalGeo)
     const g = new Group()
+    if (this.exterior) {
+      const view = new Mesh(glassGeo, this.exterior.material)
+      view.position.z = -0.003
+      g.add(view)
+    }
     const glass = new Mesh(glassGeo, glassMat)
-    glass.position.z = 0.002
-    const left = new Mesh(sideGeo, frameMat)
-    left.position.set(-(w.w - bar) / 2, 0, depth / 2)
-    const right = new Mesh(sideGeo, frameMat)
-    right.position.set((w.w - bar) / 2, 0, depth / 2)
-    const top = new Mesh(topGeo, frameMat)
-    top.position.set(0, (w.h - bar) / 2, depth / 2)
-    const sill = new Mesh(sillGeo, frameMat)
-    sill.position.set(0, -(w.h - bar) / 2, depth)
-    for (const m of [left, right, top, sill]) m.castShadow = true
-    g.add(glass, left, right, top, sill)
-    // 로컬 +z(앞면)가 방 안쪽(+x)을 보게 돌린다. 벽면(x=0)에 붙인다
-    g.rotation.y = Math.PI / 2
-    g.position.set(0.004, w.y, w.z)
+    glass.position.z = 0.003
+    g.add(glass)
+    for (const x of [-w.w / 2, w.w / 2]) {
+      const post = new Mesh(verticalGeo, frameMat)
+      post.position.x = x
+      g.add(post)
+    }
+    for (const y of [-w.h / 2, w.h / 2]) {
+      const rail = new Mesh(horizontalGeo, frameMat)
+      rail.position.y = y
+      g.add(rail)
+    }
+    for (let i = 1; i <= (w.mullions ?? 0); i++) {
+      const post = new Mesh(verticalGeo, frameMat)
+      post.position.x = -w.w / 2 + (w.w * i) / ((w.mullions ?? 0) + 1)
+      g.add(post)
+    }
+    if (!w.door) {
+      const sillGeo = new BoxGeometry(w.w, 0.065, 0.16)
+      const sillMat = new MeshStandardMaterial({ color: '#d3d9d9', roughness: 0.65 })
+      const sill = new Mesh(sillGeo, sillMat)
+      sill.position.set(0, -w.h / 2 + 0.0325, 0.045)
+      sill.receiveShadow = true
+      g.add(sill)
+      this.frameDisposables.push(sillGeo, sillMat)
+    }
+    if (w.door) {
+      const handleGeo = new BoxGeometry(0.012, 0.24, 0.035)
+      const handle = new Mesh(handleGeo, frameMat)
+      handle.position.set(w.w * 0.35, 0.85 - w.y, 0.025)
+      g.add(handle)
+      this.frameDisposables.push(handleGeo)
+    }
+    if (w.wall === 'W') {
+      g.rotation.y = Math.PI / 2
+      g.position.set(0, w.y, w.z ?? D / 2)
+    } else {
+      g.position.set(w.x ?? W / 2, w.y, 0)
+    }
     this.scene.add(g)
   }
 
   /**
-   * 북쪽 벽 TV: 광택 있는 검은 벽걸이 몸체(아래 베젤이 조금 두껍고 빨간 전원 LED), 화면에는 사용량(tvScreen)과
+   * 독립형 TV: 광택 있는 검은 벽걸이 몸체(아래 베젤이 조금 두껍고 빨간 전원 LED), 화면에는 사용량(tvScreen)과
    * 비스듬한 유리 반사광. 화면은 조명을 받지 않는 재질이라 늘 또렷하다. 벽 장식이라 이동 막힘에는 넣지 않는다
    */
   private placeTv() {
-    const { x, y, w, h } = LAYOUT.tv
+    const { x, y, z, w, h } = LAYOUT.tv
     const side = 0.022 // 양옆·위 베젤
     const chin = 0.045 // 아래 베젤(LED 자리)
     const sw = w - 2 * side
@@ -1261,8 +1673,20 @@ export class OfficeScene {
     const led = new Mesh(ledGeo, ledMat)
     led.position.set(w / 2 - 0.08, -h / 2 + chin / 2, 0.026)
     g.add(body, screen, glass, led)
-    // 북쪽 벽 안쪽 면(z=0)에서 살짝 띄워 건다. 앞면(+z)이 방 안쪽이다
-    g.position.set(x, y, 0.035)
+    // 낮은 메탈 스탠드 위에 화면을 올린다. 앞면(+z)이 방 안쪽이다
+    g.position.set(x, y, z)
+    const standMat = new MeshStandardMaterial({ color: '#aebac1', metalness: 0.6, roughness: 0.3 })
+    const standGeo = new BoxGeometry(0.035, y - h / 2, 0.04)
+    const baseGeo = new BoxGeometry(w * 0.8, 0.035, 0.35)
+    for (const dx of [-w * 0.28, w * 0.28]) {
+      const leg = new Mesh(standGeo, standMat)
+      leg.position.set(x + dx, (y - h / 2) / 2, z)
+      this.scene.add(leg)
+    }
+    const base = new Mesh(baseGeo, standMat)
+    base.position.set(x, 0.025, z)
+    this.scene.add(base)
+    this.frameDisposables.push(standMat, standGeo, baseGeo)
     this.scene.add(g)
     this.tv = { canvas: cv, tex }
     this.tvDirty = true
@@ -1281,19 +1705,16 @@ export class OfficeScene {
   }
 
   /**
-   * 창밖 풍경을 지금 시각으로 다시 그린다(분이 바뀔 때만). 주소에 `?hour=18.5` 처럼 시각을 주면 그 시각으로 고정한다(확인용)
+   * 픽셀아트 파노라마의 낮·밤을 현재 시각에 맞춘다(분이 바뀔 때만). 주소에 `?hour=18.5` 처럼 시각을 주면 그 시각으로 고정한다(확인용)
    */
-  private updateWindowViews() {
+  private updateExterior() {
     const now = new Date()
     const minute = now.getHours() * 60 + now.getMinutes()
-    if (minute === this.viewMinute) return
-    this.viewMinute = minute
+    if (minute === this.exteriorMinute) return
+    this.exteriorMinute = minute
     const fixed = Number(new URLSearchParams(location.search).get('hour'))
     const hour = location.search.includes('hour=') && Number.isFinite(fixed) ? fixed : minute / 60
-    for (const v of this.windowViews) {
-      drawWindowView(v.canvas, hour)
-      v.tex.needsUpdate = true
-    }
+    this.exterior?.update(hour)
     this.updateDayNight(hour)
   }
 
@@ -1302,9 +1723,9 @@ export class OfficeScene {
     const night = nightness(hour)
     const r = this.roomLights
     if (r) {
-      r.hemi.intensity = 1.15 * (1 - 0.4 * night)
-      r.amb.intensity = 0.35 * (1 - 0.3 * night)
-      r.sun.intensity = 2.6 * (1 - 0.6 * night)
+      r.hemi.intensity = 1.35 * (1 - 0.25 * night)
+      r.amb.intensity = 0.55 * (1 - 0.15 * night)
+      r.sun.intensity = 2.1 * (1 - 0.7 * night)
     }
     for (const l of this.lamps) {
       l.shade.emissiveIntensity = 1.4 * night
@@ -1345,27 +1766,115 @@ export class OfficeScene {
     const art = new Mesh(artGeo, artMat)
     art.position.z = depth / 2 + 0.002
     group.add(paper, art)
-    // 로컬 +z(앞면)가 방 안쪽(+x)을 보게 y 축으로 π/2 돌린다. 뒷면은 벽에서 0.005 띄운다
-    group.rotation.y = Math.PI / 2
-    group.position.set(0.005 + depth / 2, f.y, f.z)
+    // 북쪽 벽은 앞면(+z)을 그대로 두고, 서쪽 벽은 방 안쪽(+x)을 보도록 회전한다.
+    if (f.wall === 'W') {
+      group.rotation.y = Math.PI / 2
+      group.position.set(0.005 + depth / 2, f.y, f.z ?? 0)
+    } else {
+      group.position.set(f.x ?? 0, f.y, f.freestanding ? (f.z ?? 0.68) : 0.005 + depth / 2)
+      if (f.freestanding) {
+        const standHeight = f.y - f.h / 2
+        const standGeo = new BoxGeometry(0.025, standHeight, 0.03)
+        const baseGeo = new BoxGeometry(f.w * 0.8, 0.025, 0.28)
+        const standMat = new MeshStandardMaterial({ color: '#b5bec4', metalness: 0.6, roughness: 0.3 })
+        const leg = new Mesh(standGeo, standMat)
+        leg.position.set(0, -f.h / 2 - standHeight / 2, 0)
+        const base = new Mesh(baseGeo, standMat)
+        base.position.set(0, -f.y + 0.02, 0)
+        group.add(leg, base)
+        this.frameDisposables.push(standGeo, baseGeo, standMat)
+      }
+    }
     this.scene.add(group)
+  }
+
+  /** Light oak top with open aluminum T legs; the original footprint and height stay fixed. */
+  private modernDesk() {
+    const group = new Group()
+    const top = new MeshStandardMaterial({ color: '#d8bc91', roughness: 0.65 })
+    const metal = new MeshStandardMaterial({ color: '#b5c0c8', metalness: 0.65, roughness: 0.32 })
+    const tray = new MeshStandardMaterial({ color: '#677780', roughness: 0.7 })
+    const box = (w: number, h: number, d: number, mat: Material, x: number, y: number, z: number) => {
+      const mesh = new Mesh(new BoxGeometry(w, h, d), mat)
+      mesh.position.set(x, y, z)
+      group.add(mesh)
+    }
+    box(0.73, 0.028, 0.56, top, 0, 0.366, 0)
+    for (const x of [-0.29, 0.29]) {
+      box(0.026, 0.326, 0.034, metal, x, 0.187, -0.015)
+      box(0.045, 0.024, 0.46, metal, x, 0.012, 0)
+      box(0.035, 0.02, 0.45, metal, x, 0.342, 0)
+    }
+    box(0.56, 0.026, 0.025, metal, 0, 0.292, -0.13)
+    box(0.4, 0.035, 0.09, tray, 0, 0.32, -0.18)
+    return group
+  }
+
+  private cafeRoundTable() {
+    const group = new Group()
+    const oak = new MeshStandardMaterial({ color: '#d8bc91', roughness: 0.65 })
+    const metal = new MeshStandardMaterial({ color: '#aeb8bc', metalness: 0.5, roughness: 0.4 })
+    const top = new Mesh(new CylinderGeometry(0.35, 0.35, 0.04, 40), oak)
+    top.position.y = 0.53
+    const leg = new Mesh(new CylinderGeometry(0.035, 0.045, 0.49, 16), metal)
+    leg.position.y = 0.265
+    const foot = new Mesh(new CylinderGeometry(0.19, 0.21, 0.025, 32), metal)
+    foot.position.y = 0.0125
+    group.add(top, leg, foot)
+    return group
+  }
+
+  private studioDisplay(withComputer: boolean) {
+    const group = new Group()
+    const aluminum = new MeshStandardMaterial({ name: 'metalDark', color: MONITOR_BODY, metalness: 0.65, roughness: 0.28 })
+    const bezel = new MeshStandardMaterial({ color: '#23282c', roughness: 0.4 })
+    const idle = new MeshStandardMaterial({ name: 'metal', color: SCREEN_IDLE_COLOR })
+    const box = (w: number, h: number, d: number, mat: Material, x: number, y: number, z: number) => {
+      const mesh = new Mesh(new BoxGeometry(w, h, d), mat)
+      mesh.position.set(x, y, z)
+      group.add(mesh)
+    }
+    // A uniform black bezel replaces the all-in-one's deep silver chin.
+    box(0.399, 0.251, 0.022, aluminum, 0, 0.2107, 0)
+    box(0.393, 0.245, 0.004, bezel, 0, 0.2107, 0.014)
+    box(0.038, 0.092, 0.024, aluminum, 0, 0.046, -0.015)
+    box(0.15, 0.008, 0.115, aluminum, 0, 0.004, 0.01)
+    if (withComputer) {
+      // One separate, compact Mac Studio-style chassis beside the right display.
+      const dark = new MeshStandardMaterial({ color: '#424b50', roughness: 0.7 })
+      const chassis = new Mesh(new RoundedBoxGeometry(0.14, 0.065, 0.14, 2, 0.009), aluminum)
+      chassis.position.set(0.28, 0.037, 0.02)
+      group.add(chassis)
+      box(0.121, 0.006, 0.121, dark, 0.28, 0.004, 0.02)
+      for (const x of [0.248, 0.275]) box(0.018, 0.004, 0.002, dark, x, 0.035, 0.091)
+      box(0.026, 0.0025, 0.002, dark, 0.305, 0.035, 0.091)
+      box(0.003, 0.003, 0.002, new MeshBasicMaterial({ color: '#f2f5ef' }), 0.328, 0.021, 0.091)
+    }
+    const face = new PlaneGeometry(0.379, 0.2314)
+    face.translate(0, 0.2107, 0.018)
+    group.add(new Mesh(face, idle))
+    const camera = new Mesh(new CylinderGeometry(0.002, 0.002, 0.001, 8), new MeshStandardMaterial({ color: '#3b4751' }))
+    camera.rotation.x = Math.PI / 2
+    camera.position.set(0, 0.331, 0.017)
+    group.add(camera)
+    return group
   }
 
   private placeItem(it: Item) {
     const m = this.assets!.furniture.get(it.model)
     if (!m) return
     const s = it.s ?? 1
-    const obj = m.root.clone(true)
+    const obj = it.model === 'desk' ? this.modernDesk()
+      : it.model === 'tableRound' ? this.cafeRoundTable()
+      : it.model === 'computerScreen' ? this.studioDisplay(it.screenKind === 'terminal')
+      : m.root.clone(true)
     obj.scale.set(it.sx ?? s, it.sy ?? s, it.sz ?? s)
     const depth = m.size.z * (it.sz ?? s)
-    const isWall = WALL_MODELS.has(it.model)
     let x = it.x
     let z = it.z
-    // 벽 조각은 원래 모델의 벽면(z=0)을 방 경계에 맞춘다. 일반 벽(두께 0.05)과 창문·문 벽(창틀 포함 0.09)은
-    // 경계 상자가 달라, 상자 가운데로 맞추면 창문·문 조각의 벽면이 0.02 뒤로 물러나 조각 사이에 단차가 생긴다
-    const wallOffset = m.center.z * (it.sz ?? s)
-    if (it.wall === 'N') z = isWall ? wallOffset : 0.02 + depth / 2
-    if (it.wall === 'W') x = isWall ? wallOffset : 0.02 + depth / 2
+    // 북쪽 정렬 가구는 유리에서 42cm 띄운 독립형 배치다.
+    if (it.wall === 'N') z = 0.42 + depth / 2
+    if (it.wall === 'W') x = 0.02 + depth / 2
     obj.position.set(x, it.y ?? 0, z)
     obj.rotation.y = it.rot ?? 0
     const shadow = !NO_SHADOW.has(it.model)
@@ -1375,6 +1884,25 @@ export class OfficeScene {
       mesh.castShadow = shadow
       mesh.receiveShadow = true
     })
+    if (['kitchenCabinet', 'kitchenSink', 'tableCoffee', 'sideTable', 'chairRounded', 'computerKeyboard', 'computerMouse', 'pottedPlant'].includes(it.model)) {
+      obj.traverse((o) => {
+        const mesh = o as Mesh
+        if (!mesh.isMesh) return
+        const source = mesh.material as MeshStandardMaterial
+        if (source.name === 'plant') return
+        const mat = source.clone()
+        mat.map = null
+        if (source.name.startsWith('wood')) {
+          mat.color.set(it.model === 'pottedPlant' ? '#c1c8c8' : source.name === 'woodDark' ? '#bea580' : '#d8bc91')
+          mat.roughness = 0.7
+        } else {
+          mat.color.set(source.name === 'metalDark' ? '#929ca2' : '#e2e6e7')
+          mat.roughness = 0.4
+          mat.metalness = 0.3
+        }
+        mesh.material = mat
+      })
+    }
     if (it.screenOf) this.bindScreen(it.screenOf, it.screenKind ?? 'design', obj)
     if (it.model === 'chairDesk' && it.zone !== undefined) this.bindChair(it.zone, obj)
     if (it.model === 'coatRackStanding') this.hangClothes(obj)
@@ -1525,11 +2053,7 @@ export class OfficeScene {
     })
   }
 
-  /**
-   * 모니터에 화면 내용을 붙인다. 모델의 'metal' 은 앞(+z)을 보는 화면 면뿐이고, 'metalDark' 는 뒷판·테두리·받침대다.
-   * 화면 면은 빈자리용 파란 화면으로 칠하고, 그 위에 같은 기울기의 판을 덧대 디자인 화면이나 터미널을 그린다.
-   * 판은 사람이 앉아 있을 때만 보이고(updateScreens), 조명을 받지 않는 재질이라 화면처럼 늘 또렷하다.
-   */
+  /** 은색 본체와 유휴 화면을 공유하고, 작업 중인 자리에는 디자인·터미널 콘텐츠를 표시한다. */
   private bindScreen(seatId: string, kind: 'design' | 'terminal', obj: Object3D) {
     const aniso = this.renderer.capabilities.getMaxAnisotropy()
     if (!this.screenGeo) {
@@ -1622,7 +2146,7 @@ export class OfficeScene {
       }
     }
     const aspect = this.width / this.height
-    const viewH = (maxX - minX) / aspect / this.userZoom
+    const viewH = Math.max((maxX - minX) / aspect, (maxY - minY) * 1.02) / this.userZoom
     const cx = (minX + maxX) / 2
     const cy = (minY + maxY) / 2
     cam.left = cx - (viewH * aspect) / 2
@@ -1630,6 +2154,7 @@ export class OfficeScene {
     cam.top = cy + viewH / 2
     cam.bottom = cy - viewH / 2
     cam.updateProjectionMatrix()
+    this.exterior?.syncCamera(cam)
   }
 
   // ───────────────────────── 실행·정리 ─────────────────────────
@@ -1643,9 +2168,14 @@ export class OfficeScene {
       this.time += dt
       if (this.assets) {
         this.update(dt)
+        if (this.barista) {
+          this.barista.mixer.update(dt)
+          this.barista.label.textContent = t().barista
+        }
         this.updateScreens(dt)
-        this.updateWindowViews()
+        this.updateExterior()
         this.updateTv()
+        this.exterior?.animate(this.time)
       }
       this.renderer.render(this.scene, this.camera)
       this.labelRenderer.render(this.scene, this.camera)
@@ -1661,9 +2191,12 @@ export class OfficeScene {
 
   destroy() {
     this.destroyed = true
+    this.exterior?.dispose()
     this.stop()
     this.wheelTarget?.removeEventListener('wheel', this.onWheel)
     this.canvas.removeEventListener('click', this.onCanvasClick)
+    this.barista?.mixer.stopAllAction()
+    this.barista = null
     for (const ch of this.chars.values()) ch.mixer.stopAllAction()
     this.chars.clear()
     const disposed = new Set<unknown>()
@@ -1820,11 +2353,11 @@ export class OfficeScene {
       const mesh = o as Mesh
       if (mesh.isMesh) {
         // 몸통만 옷 색을 바꾼다. 재질은 원본을 복제해서 바꾼다(공유 재질을 바꾸면 다른 캐릭터도 같이 변한다)
-        if (mesh.name === 'body-mesh') {
-          const m = (mesh.material as MeshStandardMaterial).clone()
-          m.map = clothes
-          mesh.material = m
-        }
+        const m = (mesh.material as MeshStandardMaterial).clone()
+        if (mesh.name === 'body-mesh') m.map = clothes
+        m.clippingPlanes = [FLOOR_CLIP]
+        m.clipShadows = true
+        mesh.material = m
         mesh.castShadow = true
         mesh.receiveShadow = false
         mesh.frustumCulled = false
@@ -1980,6 +2513,8 @@ export class OfficeScene {
         idleTimer: rand(4, 9),
         standTimer: 0,
         leaving: false,
+        entering: true,
+        ridingDown: false,
         removed: false,
         delay: this.spawned++ * 0.9,
         playing: null,
@@ -2005,6 +2540,15 @@ export class OfficeScene {
     ch.status = status
     ch.act = actOf(status)
     ch.title = title
+    if (ch.leaving && ch.goal === 'door') {
+      ch.ridingDown = false
+      ch.entering = Math.hypot(ch.x - DOOR.x, ch.z - DOOR.z) < 0.73
+      if (ch.entering) {
+        ch.x = DOOR.x
+        ch.z = DOOR.z
+      }
+      this.route(ch, ch.seat ? 'seat' : 'spot')
+    }
     ch.leaving = false
   }
 
@@ -2136,7 +2680,9 @@ export class OfficeScene {
   private arrive(ch: Char) {
     const to = this.dest(ch, ch.goal)
     if (ch.goal === 'door') {
-      ch.removed = true
+      ch.ridingDown = true
+      ch.entering = false
+      ch.mode = 'stand'
     } else if (ch.goal === 'seat') {
       ch.mode = 'sit'
       ch.sitAt = ch.seat ? deskSit(ch.seat) : null
@@ -2227,15 +2773,26 @@ export class OfficeScene {
   }
 
   private update(dt: number) {
+    this.updateElevator(dt)
     for (const ch of this.chars.values()) {
+      if (ch.entering && ch.leaving && !ch.holder.visible) {
+        ch.removed = true
+        continue
+      }
       if (ch.delay > 0) {
         ch.delay -= dt
+        continue
+      }
+      if (ch.entering && this.elevator?.motion.state === 'lowering') {
+        ch.holder.visible = ch.ring.visible = false
         continue
       }
       if (!ch.holder.visible) {
         ch.holder.visible = true
         ch.ring.visible = true
       }
+      if (ch.removed) continue
+      if (ch.ridingDown) { this.applyPose(ch, dt); continue }
       if (ch.mode === 'walk') this.stepWalk(ch, dt)
       else if (ch.mode === 'sit') this.stepSit(ch, dt)
       else this.stepStand(ch, dt)
@@ -2260,9 +2817,9 @@ export class OfficeScene {
       const used = this.zones[z] !== null
       this.zoneLabels[z].el.style.display = used ? '' : 'none'
       const mat = this.zoneMats[z]
-      mat.color.set(used ? TEAM_COLORS[z] : '#ffffff')
-      mat.opacity = used ? 0.42 : 0.07
-      this.chairMats.get(z)?.color.set(used ? TEAM_COLORS[z] : '#8a90a0')
+      mat.color.set(TEAM_FLOORS[z])
+      mat.opacity = used ? 0.9 : 0.65
+      this.chairMats.get(z)?.color.set('#a6afb4')
     }
     if (freed) this.sync(this.lastSessions)
   }
@@ -2272,16 +2829,18 @@ export class OfficeScene {
     this.holdCup(ch, false)
     this.scene.remove(ch.holder, ch.ring)
     ch.labelEl.remove()
-    // 몸통 재질은 캐릭터별 복제본이라 여기서 해제한다. 지오메트리·색상표 텍스처는 공유하므로 destroy 에서 정리한다
+    // 바닥 클리핑을 위해 복제한 캐릭터 재질을 해제한다. 지오메트리와 색상표 텍스처는 공유한다.
     ch.holder.traverse((o) => {
       const mesh = o as Mesh
-      if (mesh.isMesh && mesh.name === 'body-mesh') (mesh.material as Material).dispose()
+      if (mesh.isMesh) (mesh.material as Material).dispose()
       ;(o as SkinnedMesh).skeleton?.dispose()
     })
     this.chars.delete(ch.key)
   }
 
   private stepWalk(ch: Char, dt: number) {
+    if (this.waitingForElevator(ch)) return
+    if (ch.entering && ch.x > ELEVATOR.frontX + 0.35) ch.entering = false
     const next = ch.path[0]
     if (!next) {
       this.arrive(ch)
@@ -2387,6 +2946,7 @@ export class OfficeScene {
   }
 
   private clipFor(ch: Char): ClipName {
+    if (this.waitingForElevator(ch)) return 'idle'
     if (ch.mode === 'walk') return 'walk'
     if (ch.mode === 'stand') return this.isDrinking(ch) ? 'coffee' : 'idle'
     if (ch.sitAt?.sofa) return 'sit'
@@ -2421,8 +2981,10 @@ export class OfficeScene {
     const sitting = ch.mode === 'sit'
     const y = ch.holder.position.y
     const lift = ch.sitAt ? liftOf(ch.sitAt.seatTop) : 0
-    const targetY = sitting ? lift : 0
-    ch.holder.position.set(ch.x, y + (targetY - y) * Math.min(1, dt * 10), ch.z)
+    const insidePod = Math.hypot(ch.x - ELEVATOR.x, ch.z - ELEVATOR.z) < 0.73
+    const riding = (ch.entering || ch.ridingDown || ch.goal === 'door') && insidePod && this.elevator !== null
+    const targetY = riding ? this.elevator!.motion.height + 0.065 : sitting ? lift : 0
+    ch.holder.position.set(ch.x, riding ? targetY : y + (targetY - y) * Math.min(1, dt * 10), ch.z)
     ch.holder.rotation.y = ch.yaw
     ch.ring.position.set(ch.x, 0.012, ch.z)
 
@@ -2432,7 +2994,9 @@ export class OfficeScene {
       : CHAR_HEIGHT + 0.06
     const head = worldHead - ch.holder.position.y
     ch.label.position.set(0, head, 0)
-    ch.labelEl.style.opacity = ch.z < 0.2 ? '0' : '1'
+    const insideLift = ch.x < ELEVATOR.frontX && ch.x > ELEVATOR.x - 0.7 && Math.abs(ch.z - ELEVATOR.z) < 0.7
+    ch.labelEl.style.opacity = insideLift ? '0' : '1'
+    ch.ring.visible = !insideLift
 
     // 말풍선: 일하는 중이면 도구 칩 + 설명, 응답 대기면 점만(칩 없음), act 가 idle(배회·자리에서 한가함)이면 없음. 단 응답 없음(멈춘 서브)은 빨간 칩을 띄운다. 휴게 공간(소파·의자·커피 자리)에서 쉬는 메인은 status 가 waiting 이라 act 가 wait 이므로 "…" 가 뜨는 것이 의도다
     const waiting = ch.act === 'wait'
@@ -2468,13 +3032,18 @@ export class OfficeScene {
    * 일하는 중이면 터미널을 스크롤한다(Bash 는 빠르게, 읽기 도구는 천천히). 대기 중이면 멈춘다.
    */
   private updateScreens(dt: number) {
+    // Keep the first occupant, matching the previous per-seat find operation.
+    const occupants = new Map<Seat, Char>()
+    for (const ch of this.chars.values()) {
+      if (ch.seat && ch.mode === 'sit' && ch.goal === 'seat' && !occupants.has(ch.seat)) {
+        occupants.set(ch.seat, ch)
+      }
+    }
     for (const seat of LAYOUT.seats) {
       const screen = this.screens.get(seat.id)
       if (!screen) continue
       // 자기 책상에 앉아 있을 때만(티테이블·소파에 앉아 있으면 빈자리로 본다)
-      const occ = [...this.chars.values()].find(
-        (c) => c.seat === seat && c.mode === 'sit' && c.goal === 'seat',
-      )
+      const occ = occupants.get(seat)
       for (const p of screen.planes) p.visible = !!occ
       const term = screen.term
       const speed = !occ || !term

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -157,6 +157,7 @@ describe('SSE — 모든 연결이 타이머 하나를 나눠 쓴다', () => {
       join(base, 'sessions'),
       join(base, '.claude.json'),
       join(base, 'agent-office-usage.json'),
+      join(base, 'codex-sessions'),
     ) as any
     plugin.configureServer({ middlewares: { use: (_p: string, h: any) => (handler = h) } })
     const connect = (host = 'localhost:5180') => {
@@ -175,8 +176,45 @@ describe('SSE — 모든 연결이 타이머 하나를 나눠 쓴다', () => {
       handler(req, res)
       return { req, res }
     }
-    return { connect, dir, file: join(dir, 's1.jsonl'), subDir: join(dir, 's1', 'subagents'), sessions: join(base, 'sessions') }
+    return { connect, root, codexRoot: join(base, 'codex-sessions'), dir, file: join(dir, 's1.jsonl'), subDir: join(dir, 's1', 'subagents'), sessions: join(base, 'sessions') }
   }
+
+  it('Codex headers recover from partial writes and replacement, even without a Claude directory', () => {
+    vi.useFakeTimers()
+    const { connect, root, codexRoot } = setup()
+    rmSync(root, { recursive: true })
+    const dir = join(codexRoot, '2026', '10', '26')
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'rollout-test.jsonl')
+    const meta = (id: string) => JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/x/codex-project' } })
+    writeFileSync(file, meta('first').slice(0, -1))
+    const client = connect()
+    const last = () => JSON.parse(client.res.writes.filter((w) => w.startsWith('data: ')).pop()!.slice(6))
+    const event = (payload: object) => JSON.stringify({ timestamp: new Date().toISOString(), type: 'event_msg', payload }) + '\n'
+    try {
+      expect(last().sessions).toEqual([])
+      appendFileSync(file, '}\n' + event({ type: 'task_started' }))
+      vi.advanceTimersByTime(1000)
+      expect(last().sessions[0]).toMatchObject({ id: 'first', project: 'codex-project', main: { state: 'working' } })
+      appendFileSync(file, event({ type: 'task_complete' }))
+      vi.advanceTimersByTime(1000)
+      expect(last().sessions[0].main.state).toBe('waiting')
+      // Truncation must discard identity metadata from the previous rollout.
+      writeFileSync(file, meta('other') + '\n' + event({ type: 'task_started' }))
+      utimesSync(file, Date.now() / 1000, Date.now() / 1000)
+      vi.advanceTimersByTime(1000)
+      expect(last().sessions[0]).toMatchObject({ id: 'other', main: { state: 'working' } })
+      // Same-size rewrites must also refresh the header.
+      writeFileSync(file, meta('third') + '\n' + event({ type: 'task_started' }))
+      utimesSync(file, Date.now() / 1000, Date.now() / 1000)
+      vi.advanceTimersByTime(1000)
+      expect(last().sessions[0].id).toBe('third')
+    } finally {
+      client.req.emit('close')
+      vi.useRealTimers()
+      rmSync(codexRoot, { recursive: true, force: true })
+    }
+  })
 
   it('두 번째 연결은 타이머를 늘리지 않고 마지막 스냅샷을 바로 받는다. 0개가 되면 멈춘다', () => {
     vi.useFakeTimers()

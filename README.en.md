@@ -4,9 +4,9 @@
 
 # Agent Office
 
-**A local dashboard that shows what your Claude Code sessions and subagents are doing, as characters in a 3D office**
+**A local dashboard that shows what your Claude Code and Codex sessions are doing, as characters in a 3D office**
 
-The main Claude types at its desk, the subagents you delegated to work at the desks next to it, and when it needs your answer, a speech bubble pops up right at its seat.
+The main agent types at its desk, delegated subagents work at the desks next to it, and when it needs your answer, a speech bubble pops up right at its seat.
 
 ![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)
 ![three.js](https://img.shields.io/badge/three.js-r186-000000?logo=threedotjs&logoColor=white)
@@ -15,7 +15,9 @@ The main Claude types at its desk, the subagents you delegated to work at the de
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office: four sessions working in their own zones, with three subagents working next to the main Claude" width="900">
+<img src="docs/screenshot.png" alt="Agent Office test scene: four sessions and six subagents in an office overlooking Seoul" width="900">
+
+<p><sub>Shown with synthetic test data: four sessions and six subagents. No real conversations or project information are included.</sub></p>
 
 </div>
 
@@ -23,7 +25,7 @@ The main Claude types at its desk, the subagents you delegated to work at the de
 
 ## Why
 
-When you run several subagents in Claude Code, the terminal alone makes it hard to see who is doing what, and which session is waiting for you. Agent Office reads the session logs in `~/.claude/projects` and shows **one office zone per session** and **one character per agent**. There is nothing to install into Claude Code and nothing to configure. Just keep it open.
+When you run several Claude Code or Codex sessions, the terminal alone makes it hard to see who is doing what, and which session is waiting for you. Agent Office reads their local session logs and shows **one office zone per session** and **one character per agent**. There is nothing to install or configure. Just keep it open.
 
 ## Features
 
@@ -43,7 +45,7 @@ When you run several subagents in Claude Code, the terminal alone makes it hard 
 ### Requirements
 
 - [Node.js](https://nodejs.org) 22.12 or later (22 LTS, or 24+)
-- A machine where you use [Claude Code](https://docs.claude.com/en/docs/claude-code) (session logs are read from the same machine)
+- A machine where you use [Claude Code](https://docs.claude.com/en/docs/claude-code) or [Codex](https://openai.com/codex/) (session logs are read from the same machine)
 
 ### Install and run
 
@@ -54,7 +56,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:5180> in your browser, then use Claude Code as usual. Characters will walk into the office.
+Open <http://localhost:5180> in your browser, then use Claude Code or Codex as usual. Characters will walk into the office.
 
 > [!NOTE]
 > Session data is served by a Vite plugin on the dev server. The output of `npm run build` (static files) does not work on its own.
@@ -79,7 +81,7 @@ Open <http://localhost:5180> in your browser, then use Claude Code as usual. Cha
 | Walks out the door | The session or agent ended |
 
 - **Name tag dots, rings under the feet and floor colors** are the session (zone) color. **Clothes color** is the agent type color.
-- The view outside the big window follows your computer's clock: dawn → morning → day → sunset → night. The sun and moon move across the window, and building windows light up at night. From the evening, the room lights dim a little and the floor and table lamps turn on, casting a warm glow around them. Add `?hour=18.5` to the URL to see a specific time.
+- The two rear glass walls look onto a pixel-art panorama with illustrated depth: Namsan, N Seoul Tower, city buildings and the Han River. The panorama is visible only inside the window frames, with day/night transitions following your clock, subtle pixel glints on the river, and gently bobbing boats. Floor lamps stand beside the café and between work areas. From the evening, the room lights dim a little and the floor and table lamps turn on, casting a warm glow around them. Add `?hour=18.5` to the URL to see a specific time.
 - Every desk has dual monitors. When someone sits down, the left one shows a design tool and the right one a terminal. Empty desks show a blue screen.
 - **Mouse wheel** zooms in and out. The top-right button toggles fullscreen.
 - **Click a character or name tag** to open the detail card. Click empty space or press `Esc` to close it.
@@ -91,15 +93,17 @@ Open <http://localhost:5180> in your browser, then use Claude Code as usual. Cha
 
 ```mermaid
 flowchart LR
-  CC["Claude Code<br/>(main · subagents)"] -- session logs jsonl --> FS[("~/.claude/projects")]
-  FS -- "every second, only changed files,<br/>tail only" --> P["Vite plugin<br/>server/plugin.ts"]
-  P -- state rules --> A["server/analyze.ts"]
+  CC["Claude Code"] -- session jsonl --> FS[("~/.claude/projects")]
+  CX["Codex"] -- rollout jsonl --> CS[("~/.codex/sessions")]
+  FS --> P
+  CS --> P
+  P["Vite plugin<br/>server/plugin.ts"] -- "every second, changed file tails" --> A["State rules<br/>server/analyze.ts"]
   P -- "SSE · states and tool names only" --> UI["Browser<br/>Vue + three.js"]
 ```
 
-1. Claude Code writes a log per session to `~/.claude/projects/<project>/<session-id>.jsonl`, and per subagent to `<session-id>/subagents/agent-<id>.jsonl` plus `agent-<id>.meta.json` (type and description).
-2. The dev server plugin picks sessions modified in the last 30 minutes (and sessions that are currently open), reads the end of each file, and decides the state from whether a tool is awaiting its result and whether the answer has finished. Unchanged files are not read again.
-3. It checks whether a session is still open using `~/.claude/sessions/<pid>.json`, which Claude Code writes for each process.
+1. Claude Code writes logs under `~/.claude/projects`; Codex writes rollout files under `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. Set `CODEX_HOME` to use a different Codex data directory. Codex subagents are linked to their parent by `parent_thread_id`.
+2. The plugin discovers session files every 5 seconds and checks known recent files and updates their states every second. New sessions and sessions resuming after a long pause can take up to 5 seconds to appear. The dev server plugin picks sessions modified in the last 30 minutes (and sessions that are currently open), reads the end of each file, and decides the state from whether a tool is awaiting its result and whether the answer has finished. Unchanged files are not read again. Codex identity metadata is cached and refreshed when a file is replaced or rewritten.
+3. For Claude Code, it also checks per-process session files. For Codex, it uses task start/completion events and the latest log activity.
 4. It pushes a snapshot over SSE only when something changes, and the browser draws the office from it. Opening many tabs still means one timer and one read on the server.
 
 <details>
@@ -147,7 +151,7 @@ Sessions and subagents of any project show up **without configuration**. Everyth
 | `AGENT_LOOKS` | Character model and clothes color per agent type | The model is picked from the type name, and the clothes color is auto-picked from 22 candidates so that types don't share colors |
 | `SEAT_OF_TYPE` | Preferred seat (0–5) per agent type | `SEAT_OTHER` → any free seat |
 | `AGENT_NAMES` | Name shown on the name tag | `agentType` as is. Plugin agents (`feature-dev:code-reviewer`) show as `code-reviewer` |
-| `OFFICE_ART` | Picture above the sofa (`'seaside'` or `'skyline'` pixel art) | `null` shows the `OFFICE_SIGN` text |
+| `OFFICE_ART` | Freestanding picture display (`'seaside'` or `'skyline'` pixel art) | `null` shows the `OFFICE_SIGN` text |
 | `OFFICE_SIGN` | Wall frame text | No frame if both are empty |
 | `MAIN_STAYS_SEATED` | The main Claude always stays at its desk (default `true`) | `false` makes it go to the lounge while waiting and wander when quiet for long |
 
@@ -179,10 +183,14 @@ The default port is **5180**, chosen to avoid other Vite projects (default 5173)
 
 ### Session log location
 
-The default is `~/.claude/projects` (`%USERPROFILE%\.claude\projects` on Windows). If you moved the Claude Code config folder with `CLAUDE_CONFIG_DIR`, set the same value in the shell that starts the dev server.
+Claude Code logs default to `~/.claude/projects` (`%USERPROFILE%\.claude\projects` on Windows). Codex logs default to `~/.codex/sessions` (`%USERPROFILE%\.codex\sessions` on Windows). Set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` in the shell that starts the dev server if you moved either data directory.
 
 ```bash
 CLAUDE_CONFIG_DIR=/path/to/claude-config npm run dev
+```
+
+```bash
+CODEX_HOME=/path/to/codex-home npm run dev
 ```
 
 > [!TIP]
@@ -199,7 +207,7 @@ Session logs contain the raw conversation and tool input/output, which may inclu
 
 ## Known limitations
 
-- **The session log format is not a public contract.** It may change between Claude Code versions, which can throw off the state rules. Unknown fields are ignored and broken lines are skipped.
+- **Session log formats can change.** Claude Code and Codex do not promise these local log formats as stable APIs, so updates may affect state detection. Unknown fields are ignored and broken lines are skipped.
 - There are 4 zones, so with 5 or more sessions open some of them are not shown.
 - When the process cannot be checked — for example, viewing Claude Code inside WSL from an Agent Office started on Windows — sessions are treated as open.
 - A force-killed subagent takes 12 minutes to show `Not responding` (headroom so that long builds are not misreported).
@@ -222,11 +230,13 @@ scripts/check-deps.mjs              Checks before npm run dev that dependencies 
 src/agent-office/scene.ts           three.js scene — characters · movement · bubbles · zone assignment
 src/agent-office/layout.ts          Office layout (pure data) · pathfinding
 src/agent-office/tvScreen.ts        Wall TV screen (usage gauges, clock)
-src/agent-office/windowView.ts      View outside the window (sky, sun, moon and city lights by time)
+src/agent-office/exterior.ts        Pixel-art landscape (day/night Seoul panoramas)
+src/agent-office/windowView.ts      Sky colors and night intensity
 src/agent-office/assets.ts          GLB loader · animation clip composition (typing etc.)
 src/agent-office/office.config.ts   Per-project settings
 src/agent-office/assets/            Kenney 3D models (CC0)
 server/plugin.ts                    Vite plugin — session scan · SSE · loopback check
+server/sessionFiles.ts              Session file index — 5-second discovery · recent file checks
 server/analyze.ts                   State rules as pure functions
 ```
 

@@ -1,5 +1,5 @@
 /**
- * Claude Code 세션 기록(~/.claude/projects/<슬러그>/*.jsonl)을 읽어 화면에 SSE 로 내려준다.
+ * Claude Code 및 Codex 세션 기록을 공통 상태로 변환해 화면에 SSE 로 내려준다.
  *
  * - `apply: 'serve'` — dev 서버에서만 동작한다.
  * - jsonl 에는 대화 원문·도구 입출력이 있어 개인정보가 섞일 수 있다. 내려보내는 것은
@@ -10,10 +10,11 @@
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import type { ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { Plugin } from 'vite'
-import { RECENT_MS, decideTail, parseTail, withAgents, withProcess } from './analyze'
+import { RECENT_MS, decideTail, parseCodexTail, parseTail, withAgents, withProcess } from './analyze'
 import type { Status, Tail } from './analyze'
+import { createSessionFileIndex } from './sessionFiles'
 
 const ENDPOINT = '/__agent-office/events'
 const ENDED_SHOW_MS = 60 * 1000 // 끝난 에이전트는 퇴장 연출을 위해 잠깐만 내려보낸다
@@ -78,12 +79,33 @@ export function startCwd(head: string, dirName: string): string | null {
   return null
 }
 
+/** Minimal Codex rollout metadata needed to identify a thread and its workspace. */
+export function codexMeta(head: string): { id: string; cwd: string; parentId: string | null } | null {
+  for (const line of head.split('\n')) {
+    try {
+      const j = JSON.parse(line)
+      if (j?.type !== 'session_meta' || typeof j.payload?.cwd !== 'string') continue
+      const id = typeof j.payload.id === 'string' ? j.payload.id : ''
+      const parentId = typeof j.payload.parent_thread_id === 'string' ? j.payload.parent_thread_id : null
+      return { id, cwd: j.payload.cwd, parentId }
+    } catch {
+      // Ignore incomplete records.
+    }
+  }
+  return null
+}
+
 /** 세션을 시작한 폴더 경로의 마지막 조각. Windows 경로(`C:\Users\me\my-app`)의 역슬래시도 구분자로 본다 */
 export const projectNameOf = (cwd: string) => cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd
 
 /** Claude Code 세션 기록 폴더. CLAUDE_CONFIG_DIR 로 설정 폴더를 옮긴 환경도 따른다 */
 export function projectsRoot(env: Record<string, string | undefined> = process.env) {
   return join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects')
+}
+
+/** Codex CLI and desktop rollout directory (`$CODEX_HOME/sessions` or `~/.codex/sessions`). */
+export function codexSessionsRoot(env: Record<string, string | undefined> = process.env) {
+  return join(env.CODEX_HOME || join(homedir(), '.codex'), 'sessions')
 }
 
 /** Claude Code 전역 설정 파일. CLAUDE_CONFIG_DIR 를 쓰면 그 안의 .claude.json, 아니면 ~/.claude.json */
@@ -215,7 +237,11 @@ export function agentOfficePlugin(
   sessionsDir = join(dirname(root), 'sessions'),
   usageFile = configFile(),
   bridgeUsageFile = join(dirname(root), 'agent-office-usage.json'),
+  codexRoot = codexSessionsRoot(),
 ): Plugin {
+  const claudeFiles = createSessionFileIndex(root, 1, (name) => name.endsWith('.jsonl'), STALE_MS)
+  const codexFiles = createSessionFileIndex(codexRoot, 3, (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'), RECENT_MS)
+  const codexMetaCache = new Map<string, { birthtimeMs: number; ino: number; size: number; mtimeMs: number; meta: NonNullable<ReturnType<typeof codexMeta>> }>()
   const homeSlug = slugOf(homedir()) + '-'
   const nameCache = new Map<string, string>() // 디렉터리 이름 → 프로젝트 이름(cwd 로 확정된 것만)
 
@@ -261,6 +287,22 @@ export function agentOfficePlugin(
     return decideTail(tail, mtimeMs, isMain, now)
   }
 
+  function analyzeCodex(file: string, mtimeMs: number, size: number, isMain: boolean, now: number): Status {
+    seen.add(file)
+    const hit = tailCache.get(file)
+    if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return decideTail(hit.tail, mtimeMs, isMain, now)
+    let text = ''
+    let ok = true
+    try {
+      text = readTail(file, size)
+    } catch {
+      ok = false
+    }
+    const tail = parseCodexTail(text)
+    if (ok) tailCache.set(file, { mtimeMs, size, tail })
+    return decideTail(tail, mtimeMs, isMain, now)
+  }
+
   const metaCache = new Map<string, { agentType: string; description: string }>()
   function readMeta(file: string) {
     const hit = metaCache.get(file)
@@ -302,69 +344,101 @@ export function agentOfficePlugin(
     seen = new Set()
     const alive = readAliveSessions(sessionsDir)
     const sessions: any[] = []
-    let dirs: string[] = []
-    try {
-      dirs = readdirSync(root)
-    } catch {
-      return { now, sessions, usage }
-    }
-    for (const dirName of dirs) {
-      const dir = join(root, dirName)
-      let names: string[] = []
+    for (const [file, st] of claudeFiles(now)) {
+      const dir = dirname(file)
+      const dirName = basename(dir)
+      const id = basename(file, '.jsonl')
       try {
-        names = readdirSync(dir)
-      } catch {
-        continue // 디렉터리가 아닌 항목
-      }
-      for (const name of names) {
-        if (!name.endsWith('.jsonl')) continue
-        const id = name.slice(0, -'.jsonl'.length)
+        const agents: any[] = []
+        const subDir = join(dir, id, 'subagents')
+        let subNames: string[] = []
         try {
-          const file = join(dir, name)
-          const st = statSync(file)
-          // 오래된 세션은 subagents/ 를 열기 전에 거른다(세션 수백 개를 매초 훑지 않도록)
-          if (now - st.mtimeMs > STALE_MS) continue
-          const agents: any[] = []
-          const subDir = join(dir, id, 'subagents')
-          let subNames: string[] = []
-          try {
-            subNames = readdirSync(subDir)
-          } catch {
-            // 서브에이전트가 없는 세션
-          }
-          let anyRecent = false
-          for (const sn of subNames) {
-            const m = /^agent-(.+)\.jsonl$/.exec(sn)
-            if (!m) continue
-            const sst = statSync(join(subDir, sn))
-            if (now - sst.mtimeMs > RECENT_MS) continue
-            anyRecent = true
-            const subFile = join(subDir, sn)
-            const status = analyze(subFile, sst.mtimeMs, sst.size, false, now)
-            if (status.state === 'ended' && now - status.lastAt > ENDED_SHOW_MS) continue
-            const meta = readMeta(join(subDir, `agent-${m[1]}.meta.json`))
-            const born = bornAt(subFile, sst.birthtimeMs, now, firstSeen)
-            if (!meta.agentType && now - born < META_WAIT_MS) continue
-            agents.push({
-              id: m[1],
-              agentType: meta.agentType,
-              description: meta.description,
-              ...status,
-            })
-          }
-          // 열려 있는 세션(프로세스가 살아 있음)은 오래 조용해도(STALE_MS 안) 내려보낸다 — 메인이 자리를 지킨다
-          if (now - st.mtimeMs > RECENT_MS && !anyRecent && !alive?.has(id)) continue
-          let main = withAgents(analyze(file, st.mtimeMs, st.size, true, now), agents)
-          if (alive) {
-            main = withProcess(main, alive.has(id), now - st.mtimeMs)
-            // 프로세스가 끝난 세션의 서브에이전트도 함께 멈췄으므로 내려보내지 않는다
-            if (main.state === 'ended') agents.length = 0
-          }
-          sessions.push({ id, project: projectName(dirName, file), main, agents })
+          subNames = readdirSync(subDir)
         } catch {
-          // 읽는 도중 파일이 사라지는 경우 등 — 그 세션만 건너뛴다
+          // 서브에이전트가 없는 세션
         }
+        let anyRecent = false
+        for (const sn of subNames) {
+          const m = /^agent-(.+)\.jsonl$/.exec(sn)
+          if (!m) continue
+          const sst = statSync(join(subDir, sn))
+          if (now - sst.mtimeMs > RECENT_MS) continue
+          anyRecent = true
+          const subFile = join(subDir, sn)
+          const status = analyze(subFile, sst.mtimeMs, sst.size, false, now)
+          if (status.state === 'ended' && now - status.lastAt > ENDED_SHOW_MS) continue
+          const meta = readMeta(join(subDir, `agent-${m[1]}.meta.json`))
+          const born = bornAt(subFile, sst.birthtimeMs, now, firstSeen)
+          if (!meta.agentType && now - born < META_WAIT_MS) continue
+          agents.push({
+            id: m[1],
+            agentType: meta.agentType,
+            description: meta.description,
+            ...status,
+          })
+        }
+        // 열려 있는 세션(프로세스가 살아 있음)은 오래 조용해도(STALE_MS 안) 내려보낸다 — 메인이 자리를 지킨다
+        if (now - st.mtimeMs > RECENT_MS && !anyRecent && !alive?.has(id)) continue
+        let main = withAgents(analyze(file, st.mtimeMs, st.size, true, now), agents)
+        if (alive) {
+          main = withProcess(main, alive.has(id), now - st.mtimeMs)
+          // 프로세스가 끝난 세션의 서브에이전트도 함께 멈췄으므로 내려보내지 않는다
+          if (main.state === 'ended') agents.length = 0
+        }
+        sessions.push({ id, project: projectName(dirName, file), main, agents })
+      } catch {
+        // 읽는 도중 파일이 사라지는 경우 등 — 그 세션만 건너뛴다
       }
+    }
+    // Codex stores rollouts under sessions/YYYY/MM/DD. Read only recent rollout tails and
+    // expose the same status shape used by the Claude adapter above.
+    const codexThreads = new Map<string, any>()
+    const codexSeen = new Set<string>()
+    for (const [file, st] of codexFiles(now)) {
+      try {
+        codexSeen.add(file)
+        const hit = codexMetaCache.get(file)
+        let meta = hit && hit.birthtimeMs === st.birthtimeMs && hit.ino === st.ino
+          && (st.size > hit.size || (st.size === hit.size && st.mtimeMs === hit.mtimeMs)) ? hit.meta : null
+        if (!meta) {
+          meta = codexMeta(readRange(file, 0, Math.min(st.size, HEAD_BYTES)))
+          // Failed/incomplete headers are retried next tick. Only identity metadata is cached.
+        }
+        if (!meta) {
+          codexMetaCache.delete(file)
+          continue
+        }
+        codexMetaCache.set(file, { birthtimeMs: st.birthtimeMs, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, meta })
+        const status = analyzeCodex(file, st.mtimeMs, st.size, !meta.parentId, now)
+        if (status.state === 'ended' && (!meta.parentId || now - status.lastAt > ENDED_SHOW_MS)) continue
+        const id = meta.id || basename(file).slice('rollout-'.length, -'.jsonl'.length)
+        const candidate = {
+          id,
+          project: projectNameOf(meta.cwd),
+          main: status,
+          agents: [],
+          parentId: meta.parentId,
+          mtimeMs: st.mtimeMs,
+        }
+        const existing = codexThreads.get(id)
+        if (!existing || candidate.mtimeMs > existing.mtimeMs) codexThreads.set(id, candidate)
+      } catch {
+        // A rollout can disappear while it is being scanned.
+      }
+    }
+    for (const file of codexMetaCache.keys()) if (!codexSeen.has(file)) codexMetaCache.delete(file)
+    for (const thread of codexThreads.values()) {
+      const parent = thread.parentId ? codexThreads.get(thread.parentId) : null
+      if (parent) parent.agents.push({ id: thread.id, agentType: '', description: '', ...thread.main })
+    }
+    for (const thread of codexThreads.values()) {
+      const parent = thread.parentId ? codexThreads.get(thread.parentId) : null
+      if (!parent) {
+        thread.main = withAgents(thread.main, thread.agents)
+        sessions.push(thread)
+      }
+      delete thread.parentId
+      delete thread.mtimeMs
     }
     // 이번 틱에 보지 않은 파일(오래됐거나 지워진 것)은 캐시·처음 본 시각에서 뺀다
     for (const file of tailCache.keys()) if (!seen.has(file)) tailCache.delete(file)

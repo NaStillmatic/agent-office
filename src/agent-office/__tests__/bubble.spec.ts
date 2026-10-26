@@ -29,9 +29,9 @@ describe('메인 말풍선 설명(mainTitle)', () => {
   })
 
   it('일하는 에이전트가 없거나 다른 도구면 이름표와 같은 문구(설명 줄 숨김)', () => {
-    expect(mainTitle(session('Agent', [agent('bug-fixer', 'ended')]))).toBe('메인 Claude')
-    expect(mainTitle(session('Bash', [agent('bug-fixer', 'working')]))).toBe('메인 Claude')
-    expect(mainTitle(session(null, []))).toBe('메인 Claude')
+    expect(mainTitle(session('Agent', [agent('bug-fixer', 'ended')]))).toBe('메인 에이전트')
+    expect(mainTitle(session('Bash', [agent('bug-fixer', 'working')]))).toBe('메인 에이전트')
+    expect(mainTitle(session(null, []))).toBe('메인 에이전트')
   })
 })
 
