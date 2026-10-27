@@ -18,6 +18,7 @@ import {
   Color,
   DirectionalLight,
   DoubleSide,
+  ExtrudeGeometry,
   Group,
   HemisphereLight,
   InstancedMesh,
@@ -42,6 +43,7 @@ import {
   Scene,
   Shape,
   ShapeGeometry,
+  SphereGeometry,
   Texture,
   TorusGeometry,
   TubeGeometry,
@@ -124,11 +126,11 @@ type ClipName = 'idle' | 'walk' | 'sit' | 'work' | 'read' | 'wait' | 'coffee'
 
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead', 'LS'])
 /** 모니터 몸체는 검정 대신 밝은 은색. 빈자리 화면은 모든 자리가 같은 파란색으로 켜져 있다 */
-const MONITOR_BODY = '#c9d1d6'
+const MONITOR_BODY = '#e7e9e9'
 const SCREEN_IDLE_COLOR = '#2f8fe0'
 const SCREEN_IDLE_GLOW = 0.55
 /** Studio Display 스타일 화면의 로컬 좌표. 본체 앞(+z)에 콘텐츠를 붙인다. */
-const SCREEN_FACE = { x0: -0.1895, x1: 0.1895, yBottom: 0.095, zBottom: 0.018, yTop: 0.3264, zTop: 0.018 }
+const SCREEN_FACE = { x0: -0.1895, x1: 0.1895, yBottom: 0.121, zBottom: 0.018, yTop: 0.3264, zTop: 0.018 }
 /** 터미널 텍스처: 한 줄 높이(px)·줄 수. 자리마다 보이는 창을 아래로 옮겨 스크롤한다 */
 const TERM_LINE = 14
 const TERM_LINES = 60
@@ -151,7 +153,7 @@ const NO_SHADOW = new Set(['rugRound', 'rugDoormat'])
 const SOFA_COLOR = new Color('#9cae9f')
 /** 천 소파라 거의 무광 */
 const SOFA_ROUGHNESS = 0.85
-const TEAM_FLOORS = ['#c3d8d4', '#e1d3bc', '#dfc9cd', '#cedcc3', '#d4cde5', '#e5cfba']
+const TEAM_FLOORS = ['#aaceca', '#b8cde0', '#e4bdc5', '#cedcc3', '#c8b8dc', '#c6d6ae']
 /** 램프 불빛 색과 한밤 세기 */
 const LAMP_GLOW = '#ffbf73'
 const LAMP_POWER = 2.2
@@ -814,10 +816,11 @@ export class OfficeScene {
   private chairMats = new Map<number, MeshStandardMaterial>()
   /** 자동 배정한 종류별 옷 색(clothesColorOf) */
   private typeColors = new Map<string, string>()
-  /** 모니터 몸체 재질. 모든 모니터가 같은 색이라 하나를 나눠 쓴다 */
+  /** 일체형 컴퓨터는 실버 본체 재질을 공유한다. */
   private monitorBody: MeshStandardMaterial | null = null
   private deskTemplate: Group | null = null
   private keyboardTemplate: Group | null = null
+  private mouseTemplate: Group | null = null
   private displayTemplates = new Map<boolean, Group>()
   private staticFurniture: Mesh[] = []
   /** 창문 안에서 이어지는 서울 강변 파노라마 */
@@ -1804,6 +1807,19 @@ export class OfficeScene {
     return root
   }
 
+  /** Low, smooth white mouse with a thin silver underside. */
+  private modernMouse() {
+    const group = new Group()
+    const shell = new Mesh(new SphereGeometry(1, 24, 16), new MeshStandardMaterial({ color: '#f9faf9', roughness: 0.27 }))
+    shell.scale.set(0.034, 0.012, 0.057)
+    shell.position.y = 0.014
+    const base = new Mesh(new SphereGeometry(1, 24, 12), new MeshStandardMaterial({ color: '#cdd3d4', metalness: 0.35, roughness: 0.45 }))
+    base.scale.set(0.031, 0.003, 0.052)
+    base.position.y = 0.003
+    group.add(base, shell)
+    return group
+  }
+
   private cafeRoundTable() {
     const group = new Group()
     const oak = new MeshStandardMaterial({ color: '#d8bc91', roughness: 0.65 })
@@ -1820,7 +1836,7 @@ export class OfficeScene {
 
   private studioDisplay() {
     const group = new Group()
-    const aluminum = new MeshStandardMaterial({ name: 'metalDark', color: MONITOR_BODY, metalness: 0.65, roughness: 0.28 })
+    const aluminum = new MeshStandardMaterial({ name: 'metalDark', color: MONITOR_BODY, metalness: 0.35, roughness: 0.38 })
     const bezel = new MeshStandardMaterial({ color: '#23282c', roughness: 0.4 })
     const idle = new MeshStandardMaterial({ name: 'metal', color: SCREEN_IDLE_COLOR })
     const box = (w: number, h: number, d: number, mat: Material, x: number, y: number, z: number) => {
@@ -1828,19 +1844,38 @@ export class OfficeScene {
       mesh.position.set(x, y, z)
       group.add(mesh)
     }
-    // A uniform black bezel replaces the all-in-one's deep silver chin.
+    // Silver all-in-one body with a slim lower chin.
     box(0.399, 0.251, 0.022, aluminum, 0, 0.2107, 0)
-    box(0.393, 0.245, 0.004, bezel, 0, 0.2107, 0.014)
-    // A slim aluminum support slopes gently into a low, rounded rectangular foot.
-    const support = new Mesh(new RoundedBoxGeometry(0.052, 0.105, 0.009, 3, 0.004), aluminum)
-    support.position.set(0, 0.057, -0.018)
-    support.rotation.x = -0.12
+    box(0.393, 0.219, 0.004, bezel, 0, 0.2237, 0.014)
+    // Subtle rear panel, centered emblem and stand hinge add depth from behind.
+    const back = new MeshStandardMaterial({ color: '#dce0e1', metalness: 0.3, roughness: 0.42 })
+    const detail = new MeshStandardMaterial({ color: '#afb8bb', metalness: 0.45, roughness: 0.35 })
+    box(0.384, 0.236, 0.002, back, 0, 0.2107, -0.012)
+    const emblem = new Mesh(new CircleGeometry(0.012, 24), detail)
+    emblem.position.set(0, 0.22, -0.0135)
+    emblem.rotation.y = Math.PI
+    group.add(emblem)
+    const hinge = new Mesh(new RoundedBoxGeometry(0.075, 0.022, 0.008, 3, 0.003), detail)
+    hinge.position.set(0, 0.109, -0.018)
+    group.add(hinge)
+    // The all-in-one stand widens toward its low, flat aluminum base.
+    const standShape = new Shape()
+    standShape.moveTo(-0.06, 0)
+    standShape.lineTo(0.06, 0)
+    standShape.lineTo(0.038, 0.12)
+    standShape.lineTo(-0.038, 0.12)
+    standShape.closePath()
+    const support = new Mesh(new ExtrudeGeometry(standShape, {
+      depth: 0.008, bevelEnabled: true, bevelSize: 0.002, bevelThickness: 0.002, bevelSegments: 2,
+    }), aluminum)
+    support.position.set(0, 0.006, -0.028)
+    support.rotation.x = -0.14
     group.add(support)
-    const foot = new Mesh(new RoundedBoxGeometry(0.15, 0.006, 0.125, 3, 0.003), aluminum)
-    foot.position.set(0, 0.003, 0.004)
+    const foot = new Mesh(new RoundedBoxGeometry(0.16, 0.006, 0.105, 3, 0.003), aluminum)
+    foot.position.set(0, 0.003, 0)
     group.add(foot)
-    const face = new PlaneGeometry(0.379, 0.2314)
-    face.translate(0, 0.2107, 0.018)
+    const face = new PlaneGeometry(0.379, 0.2054)
+    face.translate(0, 0.2237, 0.018)
     group.add(new Mesh(face, idle))
     const camera = new Mesh(new CylinderGeometry(0.002, 0.002, 0.001, 8), new MeshStandardMaterial({ color: '#3b4751' }))
     camera.rotation.x = Math.PI / 2
@@ -1891,6 +1926,7 @@ export class OfficeScene {
       : it.model === 'loungeSofa' || it.model === 'loungeChair' ? this.loungeFurniture(it.model === 'loungeChair')
       : it.model === 'tableRound' ? this.cafeRoundTable()
       : it.model === 'computerKeyboard' ? (this.keyboardTemplate ??= this.modernKeyboard()).clone(true)
+      : it.model === 'computerMouse' ? (this.mouseTemplate ??= this.modernMouse()).clone(true)
       : it.model === 'computerScreen' ? this.displayTemplate().clone(true)
       : m.root.clone(true)
     obj.scale.set(it.sx ?? s, it.sy ?? s, it.sz ?? s)
@@ -1909,7 +1945,7 @@ export class OfficeScene {
       mesh.castShadow = shadow
       mesh.receiveShadow = true
     })
-    if (['kitchenCabinet', 'kitchenSink', 'tableCoffee', 'sideTable', 'chairRounded', 'computerMouse', 'pottedPlant'].includes(it.model)) {
+    if (['kitchenCabinet', 'kitchenSink', 'tableCoffee', 'sideTable', 'chairRounded', 'pottedPlant'].includes(it.model)) {
       obj.traverse((o) => {
         const mesh = o as Mesh
         if (!mesh.isMesh) return
@@ -1933,7 +1969,7 @@ export class OfficeScene {
     if (it.model === 'coatRackStanding') this.hangClothes(obj)
     if (it.model === 'rugDoormat') this.dressDoormat(obj)
     if (it.model.startsWith('lamp')) this.wireLamp(obj, m.size.y)
-    if (it.model === 'desk' || it.model === 'computerScreen' || it.model === 'computerKeyboard') {
+    if (it.model === 'desk' || it.model === 'computerScreen' || it.model === 'computerKeyboard' || it.model === 'computerMouse') {
       obj.traverse((o) => {
         if ((o as Mesh).isMesh) this.staticFurniture.push(o as Mesh)
       })
@@ -2092,7 +2128,7 @@ export class OfficeScene {
     })
   }
 
-  /** 은색 본체와 유휴 화면을 공유하고, 작업 중인 자리에는 디자인·터미널 콘텐츠를 표시한다. */
+  /** 실버 본체와 유휴 화면을 공유하고 작업 화면을 표시한다. */
   private bindScreen(seatId: string, kind: 'design' | 'terminal', obj: Object3D) {
     const aniso = this.renderer.capabilities.getMaxAnisotropy()
     if (!this.screenGeo) {
@@ -2263,7 +2299,7 @@ export class OfficeScene {
       else if (mat) disposeMaterial(mat)
     })
     // Template materials can have been replaced by the shared screen materials.
-    for (const template of [this.deskTemplate, this.keyboardTemplate, ...this.displayTemplates.values()]) {
+    for (const template of [this.deskTemplate, this.keyboardTemplate, this.mouseTemplate, ...this.displayTemplates.values()]) {
       template?.traverse((o) => {
         const mat = (o as Mesh).material
         if (Array.isArray(mat)) mat.forEach(disposeMaterial)
@@ -2272,6 +2308,7 @@ export class OfficeScene {
     }
     this.deskTemplate = null
     this.keyboardTemplate = null
+    this.mouseTemplate = null
     this.displayTemplates.clear()
     for (const d of this.frameDisposables) d.dispose()
     this.frameDisposables = []

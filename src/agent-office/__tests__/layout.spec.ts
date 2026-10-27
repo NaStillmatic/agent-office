@@ -99,20 +99,6 @@ describe('사무실 배치', () => {
     }
   })
 
-  it('places one compact computer per desktop and none at the meeting table', () => {
-    const desks = LAYOUT.seats.filter(seat => seat.zone !== 0)
-    expect(LAYOUT.miniComputers).toHaveLength(desks.length)
-    expect(new Set(LAYOUT.miniComputers.map(pc => pc.seatId)).size).toBe(desks.length)
-    for (const seat of desks) {
-      const pc = LAYOUT.miniComputers.find(item => item.seatId === seat.id)!
-      expect(pc).toBeDefined()
-      const desk = LAYOUT.items.filter(item => item.model === 'desk' && item.zone === seat.zone && Math.abs(item.x - seat.cx) < 0.01)
-        .sort((a, b) => Math.abs(a.z - seat.cz) - Math.abs(b.z - seat.cz))[0]
-      expect(Math.abs(pc.x - desk.x) + 0.09 * pc.scale).toBeLessThan(0.73 * (desk.sx ?? 1) / 2)
-      expect(pc.y).toBeCloseTo(0.38 * (desk.s ?? 1))
-    }
-  })
-
   it('모든 자리·구경 지점·대기 자리까지 문에서 길이 이어진다', () => {
     const targets = [
       ...LAYOUT.seats.map((s) => ({ name: s.id, x: s.cx, z: s.cz })),
@@ -168,6 +154,7 @@ describe('사무실 배치', () => {
       const desks = LAYOUT.items.filter((i) => i.model === 'desk' && i.zone === z)
       if (z === 0 || z === 3) { expect(desks).toHaveLength(0); continue }
       expect(desks).toHaveLength(6)
+      expect(new Set(desks.map((desk) => [desk.s, desk.sx, desk.sz].join(','))).size).toBe(1)
       expect(new Set(desks.map((d) => d.z.toFixed(2))).size).toBe(2)
       expect(new Set(desks.map((d) => d.rot ?? 0)).size).toBe(2)
     }

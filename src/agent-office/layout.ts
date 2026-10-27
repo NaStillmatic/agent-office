@@ -227,7 +227,6 @@ export const cellCenter = (c: number) => (c + 0.5) * G
 export interface OfficeLayout {
   items: Item[]
   seats: Seat[]
-  miniComputers: { seatId: string; x: number; z: number; y: number; yaw: number; scale: number }[]
   pois: Poi[]
   /** 팀 구역에 자리가 모자란 인원이 서 있을 자리(구역별) */
   spots: { x: number; z: number }[][]
@@ -410,13 +409,12 @@ function seatPlacement(zone: number, local: number) {
   const dz = o.z + ROW_Z[row]
   if (zone === 0) return { dx, dz: o.z + 0.75, lead, sx: dx, sz: o.z + (row === 0 ? -0.1 : 1.6), yaw: row === 0 ? 0 : Math.PI }
   const yaw = row === 0 ? 0 : Math.PI
-  return { dx, dz, lead, sx: dx, sz: dz - Math.cos(yaw) * (lead ? 0.64 : 0.54), yaw }
+  return { dx, dz, lead, sx: dx, sz: dz - Math.cos(yaw) * 0.54, yaw }
 }
 
 function build(): OfficeLayout {
   const items: Item[] = []
   const seats: Seat[] = []
-  const miniComputers: OfficeLayout['miniComputers'] = []
   const blocked = new Set<string>()
 
   const blockRect = (cx: number, cz: number, w: number, d: number) => {
@@ -457,9 +455,9 @@ function build(): OfficeLayout {
     for (let local = 0; local < (z === 3 ? 0 : 6); local++) {
       const p = seatPlacement(z, local)
       const id = `Z${z}-${local}`
-      const s = p.lead ? 1.28 : 1
+      const s = 1
       if (z !== 0) put({ model: 'desk', x: p.dx, z: p.dz, s, sx: s * 1.65, rot: p.yaw === 0 ? Math.PI : 0, zone: z })
-      const chairScale = p.lead ? 0.88 : 0.8
+      const chairScale = 0.8
       const chairHeight = chairScale * CHAIR_HEIGHT_RATIO
       put({
         model: 'chairDesk',
@@ -484,7 +482,7 @@ function build(): OfficeLayout {
           z: p.dz + Math.cos(p.yaw) * 0.07 * s,
           y: top,
           rot: (p.yaw === 0 ? Math.PI : 0) - side * 0.10,
-          s: p.lead ? 1.35 : 1.15,
+          s: 1.15,
           screenOf: id,
           // The seated worker sees the webpage on the left and code on the right.
           screenKind: side * Math.cos(p.yaw) > 0 ? 'design' : 'terminal',
@@ -492,10 +490,6 @@ function build(): OfficeLayout {
       }
       if (z !== 0) put({ model: 'computerKeyboard', x: p.dx, z: p.dz - Math.cos(p.yaw) * 0.1 * s, y: top, s, rot: p.yaw })
       if (z !== 0) put({ model: 'computerMouse', x: p.dx - Math.cos(p.yaw) * 0.24 * s, z: p.dz - Math.cos(p.yaw) * 0.1 * s, y: top, s, rot: p.yaw })
-      if (z !== 0) miniComputers.push({
-        seatId: id, x: p.dx + 0.48 * s, z: p.dz + Math.cos(p.yaw) * 0.15 * s,
-        y: top, yaw: p.yaw, scale: s,
-      })
       // 장식은 모니터와 겹치지 않게 책상 앞 왼쪽 모서리에 둔다
       if (z === 0 || z === 2) {
         // Meeting stationery and design tablets are supplied by roleFurniture.
@@ -667,7 +661,6 @@ function build(): OfficeLayout {
   return {
     items,
     seats,
-    miniComputers,
     pois,
     spots,
     blocked,

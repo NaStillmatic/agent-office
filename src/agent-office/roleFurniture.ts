@@ -1,5 +1,4 @@
-import { BoxGeometry, CanvasTexture, CylinderGeometry, ExtrudeGeometry, Shape, Group, Mesh, MeshStandardMaterial, PlaneGeometry, SRGBColorSpace, type Scene } from 'three'
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { BoxGeometry, CanvasTexture, ExtrudeGeometry, Shape, Group, Mesh, MeshStandardMaterial, PlaneGeometry, SRGBColorSpace, type Scene } from 'three'
 import { ZONE_ORIGIN, LAYOUT } from './layout'
 import { instanceStaticMeshes } from './staticMeshes'
 
@@ -109,28 +108,6 @@ export function addRoleFurniture(scene: Scene) {
       laptop.position.set(meeting.x + dx, 0.39, meeting.z + 0.75 + side * 0.32)
       root.add(laptop)
     }
-  }
-  // Exactly one compact, low silver computer at each desktop workstation.
-  const desktopMiniGeo = new RoundedBoxGeometry(0.105, 0.041, 0.105, 4, 0.005)
-  const desktopMiniMat = new MeshStandardMaterial({ color: '#d9dee0', metalness: 0.42, roughness: 0.48 })
-  const desktopMiniFootGeo = new CylinderGeometry(0.035, 0.035, 0.003, 24)
-  const desktopMiniFootMat = mat('#42494b')
-  for (const pc of LAYOUT.miniComputers) {
-    const unit = new Group()
-    unit.position.set(pc.x, pc.y, pc.z)
-    unit.rotation.y = pc.yaw
-    unit.scale.setScalar(pc.scale)
-    const chassis = new Mesh(desktopMiniGeo, desktopMiniMat)
-    chassis.position.y = 0.0235
-    chassis.castShadow = true
-    chassis.receiveShadow = true
-    unit.add(chassis)
-    const foot = new Mesh(desktopMiniFootGeo, desktopMiniFootMat)
-    foot.position.y = 0.0015
-    unit.add(foot)
-    for (const x of [-0.022, -0.006]) unit.add(box(x, 0.021, -0.053, 0.009, 0.003, 0.001, '#50595b'))
-    unit.add(box(0.034, 0.018, -0.053, 0.002, 0.002, 0.001, '#e7f2ec'))
-    root.add(unit)
   }
   for (const seat of LAYOUT.seats.filter(s => s.zone === 2 || s.zone === 4)) {
     const desk = LAYOUT.items.find(i => i.model === 'desk' && i.zone === seat.zone && Math.abs(i.x - seat.x) < 0.01 && Math.abs(i.z - seat.z) < 0.65)
