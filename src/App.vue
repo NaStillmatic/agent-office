@@ -11,6 +11,25 @@
         <span class="hud-chip dim">{{ m.localOnly }}</span>
       </div>
 
+      <div class="provider-filter" role="group" :aria-label="m.providerFilter">
+        <button v-for="option in PROVIDER_FILTERS" :key="option" type="button"
+          :aria-pressed="providerFilter === option" @click="providerFilter = option">
+          {{ option === 'all' ? m.allProviders : option === 'claude' ? 'Claude' : 'Codex' }}
+        </button>
+      </div>
+      <div class="usage-groups">
+        <div v-for="group in usageGroups" :key="group.provider" class="hud-usage" :aria-label="`${group.name} ${m.usageTitle}`">
+          <span class="usage-provider">{{ group.name }}</span>
+          <template v-if="group.rows.length">
+            <div v-for="row in group.rows" :key="row.key" class="usage-chip" :title="[row.label, row.reset === null ? null : m.resetsIn(row.reset), group.updated].filter(Boolean).join(' · ')">
+              <span>{{ row.label }}</span>
+              <progress v-if="row.pct !== null" :value="row.pct" max="100" :aria-label="row.label" :class="{ warm: row.pct >= 50, high: row.pct >= 80 }" />
+              <strong>{{ row.pct === null ? '—' : `${row.pct}%` }}</strong>
+            </div>
+          </template>
+          <span v-else class="usage-chip unavailable" :title="m.usageUnavailable" :aria-label="m.usageUnavailable">—</span>
+        </div>
+      </div>
       <div class="hud-actions">
         <select v-model="locale" class="hud-lang" :title="m.language" :aria-label="m.language">
           <option v-for="l in LOCALES" :key="l" :value="l">{{ LOCALE_NAMES[l] }}</option>
@@ -70,15 +89,17 @@
       <template v-if="!connected">
         {{ m.noStream[0] }}<code>npm run dev</code>{{ m.noStream[1] }}
       </template>
-      <template v-else>{{ m.noSessions }}</template>
+      <template v-else>{{ providerFilter === 'all' ? m.noSessions : m.noProviderSessions }}</template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { PROVIDER_FILTERS, filterSessions, isProviderFilter, visibleProviders, type ProviderFilter } from './agent-office/providers'
+import { currentUsagePercent, usagePercent, resetMinutes, type UsageInfo, type CodexUsageInfo } from './agent-office/usage'
 import { ZONE_COUNT } from './agent-office/layout'
-import { OfficeScene, agentLabel, isBusy, toolLabel, type SessionInfo, type UsageInfo } from './agent-office/scene'
+import { OfficeScene, agentLabel, isBusy, toolLabel, type SessionInfo } from './agent-office/scene'
 import {
   HTML_LANG,
   LOCALES,
@@ -93,10 +114,14 @@ import {
 interface Snapshot {
   now: number
   sessions: SessionInfo[]
-  /** Claude Code 사용량(세션 5시간·주간 7일). 벽 TV 에 그린다. 없으면 TV 에 '—' 를 그린다 */
+  /** Claude Code 사용량(세션 5시간·주간 7일). 상단 바에 표시한다. */
   usage?: UsageInfo | null
+  codexUsage?: CodexUsageInfo | null
 }
 
+const usageNow = ref(Date.now())
+let usageTimer: ReturnType<typeof setInterval> | null = null
+let usageExpiryTimer: ReturnType<typeof setTimeout> | null = null
 const snapshot = ref<Snapshot | null>(null)
 const connected = ref(false)
 const isFullscreen = ref(false)
@@ -108,8 +133,18 @@ let es: EventSource | null = null
 let scene: OfficeScene | null = null
 let observer: ResizeObserver | null = null
 
+const PROVIDER_KEY = 'agent-office:provider'
+function loadProvider(): ProviderFilter {
+  try {
+    const saved = localStorage.getItem(PROVIDER_KEY)
+    if (isProviderFilter(saved)) return saved
+  } catch { /* Storage is optional. */ }
+  return 'all'
+}
+const providerFilter = ref<ProviderFilter>(loadProvider())
+const filteredSessions = computed(() => filterSessions(snapshot.value?.sessions ?? [], providerFilter.value))
 const liveSessions = computed(() =>
-  (snapshot.value?.sessions ?? []).filter(
+  filteredSessions.value.filter(
     (s) => s.main.state !== 'ended' || s.agents.some((a) => a.state !== 'ended'),
   ),
 )
@@ -130,6 +165,31 @@ function loadLocale(): Locale {
 const locale = ref<Locale>(loadLocale())
 setLocale(locale.value)
 const m = computed(() => MESSAGES[locale.value])
+const usageGroups = computed(() => visibleProviders(providerFilter.value).map(provider => ({
+  provider,
+  name: provider === 'claude' ? 'Claude' : 'Codex',
+  updated: provider === 'codex' && snapshot.value?.codexUsage?.fetchedAt ? `${m.value.usageRecorded}: ${new Date(snapshot.value.codexUsage.fetchedAt).toLocaleString(locale.value)}` : '',
+  rows: provider === 'claude' ? (['session', 'weekly'] as const).map(key => {
+    const value = snapshot.value?.usage?.[key]
+    return { key, label: key === 'session' ? m.value.usageSession : m.value.usageWeekly, pct: currentUsagePercent(value, usageNow.value), reset: resetMinutes(value, usageNow.value) }
+  }) : (snapshot.value?.codexUsage?.windows ?? [])
+    .filter(value => value.resetsAt === null || value.resetsAt > usageNow.value)
+    .map(value => ({ key: String(value.minutes), label: value.minutes === 10080 ? m.value.usageWeekly : m.value.usageWindow(value.minutes), pct: usagePercent(value), reset: resetMinutes(value, usageNow.value) })),
+})))
+function scheduleUsageExpiry() {
+  if (usageExpiryTimer) clearTimeout(usageExpiryTimer)
+  usageExpiryTimer = null
+  const now = Date.now()
+  const deadlines = [snapshot.value?.usage?.session?.resetsAt, snapshot.value?.usage?.weekly?.resetsAt,
+    ...(snapshot.value?.codexUsage?.windows.map(value => value.resetsAt) ?? [])]
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > now)
+  if (!deadlines.length) return
+  const delay = Math.min(Math.min(...deadlines) - now + 1, 2_147_483_647)
+  usageExpiryTimer = setTimeout(() => {
+    usageNow.value = Date.now()
+    scheduleUsageExpiry()
+  }, delay)
+}
 function applyDocumentLocale(l: Locale) {
   document.documentElement.lang = HTML_LANG[l]
   document.title = MESSAGES[l].appTitle
@@ -226,9 +286,15 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape' && pickedKey.value) pick(null)
 }
 
+watch(providerFilter, (value) => {
+  try { localStorage.setItem(PROVIDER_KEY, value) } catch { /* Storage is optional. */ }
+  pick(null)
+  scene?.sync(filteredSessions.value, snapshot.value?.now, true)
+})
 watch(snapshot, (v) => {
-  scene?.sync(v?.sessions ?? [], v?.now)
-  scene?.setUsage(v?.usage ?? null)
+  usageNow.value = Date.now()
+  scheduleUsageExpiry()
+  scene?.sync(filteredSessions.value, v?.now)
 })
 
 /** 화면을 꽉 채우도록 렌더 크기를 맞춘다 */
@@ -273,13 +339,13 @@ function disconnect() {
 }
 
 onMounted(() => {
+  usageTimer = setInterval(() => { usageNow.value = Date.now() }, 60_000)
   if (!canvasEl.value || !layerEl.value) return
   scene = new OfficeScene(canvasEl.value, layerEl.value)
   scene.onSelect = pick
-  scene.setUsage(snapshot.value?.usage ?? null)
   applyDocumentLocale(locale.value)
   scene.setShowProject(showProject.value)
-  scene.sync(snapshot.value?.sessions ?? [], snapshot.value?.now)
+  scene.sync(filteredSessions.value, snapshot.value?.now)
   fitSize()
   if (stageEl.value) {
     observer = new ResizeObserver(fitSize)
@@ -304,6 +370,8 @@ function onVisibilityChange() {
 }
 
 onBeforeUnmount(() => {
+  if (usageTimer) clearInterval(usageTimer)
+  if (usageExpiryTimer) clearTimeout(usageExpiryTimer)
   disconnect()
   observer?.disconnect()
   document.removeEventListener('fullscreenchange', onFullscreenChange)
@@ -382,6 +450,22 @@ onBeforeUnmount(() => {
 .hud-chip.off::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .hud-chip.warn { color: #8a6223; }
 .hud-chip.dim { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #7d878d; font-size: 11px; }
+.provider-filter { display: flex; flex: none; padding: 3px; border: 1px solid #dfe6e4; border-radius: 18px; background: #f2f5f4; }
+.provider-filter button { border: 0; border-radius: 14px; padding: 5px 9px; background: transparent; color: #58656a; font: inherit; font-size: 12px; cursor: pointer; }
+.provider-filter button[aria-pressed='true'] { background: #fff; color: #285c49; box-shadow: 0 1px 4px #22392b1a; font-weight: 650; }
+.provider-filter button:focus-visible { outline: 2px solid #547e9c; outline-offset: 1px; }
+.usage-groups { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.usage-chip.unavailable { min-width: 20px; justify-content: center; color: #8a9396; }
+.hud-usage { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; color: #526269; }
+.usage-provider { font-weight: 650; }
+.usage-chip { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid #dfe6e4; border-radius: 16px; background: #f6f8f7; white-space: nowrap; }
+.usage-chip strong { min-width: 27px; color: #3e6757; font-variant-numeric: tabular-nums; text-align: right; }
+.usage-chip progress { width: 42px; height: 5px; border: 0; border-radius: 6px; overflow: hidden; appearance: none; accent-color: #6a9d86; }
+.usage-chip progress::-webkit-progress-bar { background: #dce6e0; }
+.usage-chip progress::-webkit-progress-value { background: #6a9d86; }
+.usage-chip progress.warm::-webkit-progress-value { background: #d4a655; }
+.usage-chip progress.high::-webkit-progress-value { background: #cc7774; }
+.usage-chip progress::-moz-progress-bar { background: #6a9d86; }
 .hud-actions { display: flex; align-items: center; flex: none; gap: 6px; }
 .hud-lang,
 .hud-switch,

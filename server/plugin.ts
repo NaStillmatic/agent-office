@@ -15,6 +15,7 @@ import type { Plugin } from 'vite'
 import { RECENT_MS, decideTail, parseCodexTail, parseTail, withAgents, withProcess } from './analyze'
 import type { Status, Tail } from './analyze'
 import { createSessionFileIndex } from './sessionFiles'
+import { createCodexUsageReader } from './codexUsage'
 
 const ENDPOINT = '/__agent-office/events'
 const ENDED_SHOW_MS = 60 * 1000 // 끝난 에이전트는 퇴장 연출을 위해 잠깐만 내려보낸다
@@ -239,6 +240,7 @@ export function agentOfficePlugin(
   bridgeUsageFile = join(dirname(root), 'agent-office-usage.json'),
   codexRoot = codexSessionsRoot(),
 ): Plugin {
+  const readCodexUsage = createCodexUsageReader(codexRoot)
   const claudeFiles = createSessionFileIndex(root, 1, (name) => name.endsWith('.jsonl'), STALE_MS)
   const codexFiles = createSessionFileIndex(codexRoot, 3, (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'), RECENT_MS)
   const codexMetaCache = new Map<string, { birthtimeMs: number; ino: number; size: number; mtimeMs: number; meta: NonNullable<ReturnType<typeof codexMeta>> }>()
@@ -385,7 +387,7 @@ export function agentOfficePlugin(
           // 프로세스가 끝난 세션의 서브에이전트도 함께 멈췄으므로 내려보내지 않는다
           if (main.state === 'ended') agents.length = 0
         }
-        sessions.push({ id, project: projectName(dirName, file), main, agents })
+        sessions.push({ id, provider: 'claude', project: projectName(dirName, file), main, agents })
       } catch {
         // 읽는 도중 파일이 사라지는 경우 등 — 그 세션만 건너뛴다
       }
@@ -414,6 +416,7 @@ export function agentOfficePlugin(
         const id = meta.id || basename(file).slice('rollout-'.length, -'.jsonl'.length)
         const candidate = {
           id,
+          provider: 'codex',
           project: projectNameOf(meta.cwd),
           main: status,
           agents: [],
@@ -444,7 +447,7 @@ export function agentOfficePlugin(
     for (const file of tailCache.keys()) if (!seen.has(file)) tailCache.delete(file)
     for (const file of firstSeen.keys()) if (!seen.has(file)) firstSeen.delete(file)
     sessions.sort((a, b) => b.main.lastAt - a.main.lastAt)
-    return { now, sessions, usage }
+    return { now, sessions, usage, codexUsage: readCodexUsage(now) }
   }
 
   // 모든 연결이 한 타이머·한 스냅샷을 나눠 쓴다. 탭을 여러 개 열어도 I/O 는 그대로다

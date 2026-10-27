@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { curvedWindowGeometry, windowArc } from '../windowGeometry'
+import { curvedTrimGeometry, curvedWindowGeometry, windowArc } from '../windowGeometry'
 import { WINDOW_RADIUS, W, D, LAYOUT, cellOf, key } from '../layout'
 
 describe('완만한 코너 창문', () => {
@@ -30,4 +30,21 @@ describe('완만한 코너 창문', () => {
     expect(LAYOUT.blocked.has(key(cellOf(2), cellOf(2)))).toBe(false)
     geometry.dispose()
   })
+  it('matches the straight sill at both ends without a height step', () => {
+    const trim = curvedTrimGeometry(WINDOW_RADIUS, 0, 0.085, -0.055, 0.185)
+    const p = trim.getAttribute('position')
+    let low = Infinity, high = -Infinity
+    for (let i = 0; i < p.count; i++) { low = Math.min(low, p.getY(i)); high = Math.max(high, p.getY(i)) }
+    expect(low).toBeCloseTo(0)
+    expect(high).toBeCloseTo(0.085)
+    const has = (x: number, z: number) => Array.from({ length: p.count }, (_, i) => i).some(i =>
+      Math.abs(p.getX(i) - x) < 1e-5 && Math.abs(p.getZ(i) - z) < 1e-5 && Math.abs(p.getY(i) - 0.085) < 1e-5,
+    )
+    expect(has(-0.055, WINDOW_RADIUS)).toBe(true)
+    expect(has(0.185, WINDOW_RADIUS)).toBe(true)
+    expect(has(WINDOW_RADIUS, -0.055)).toBe(true)
+    expect(has(WINDOW_RADIUS, 0.185)).toBe(true)
+    trim.dispose()
+  })
+
 })

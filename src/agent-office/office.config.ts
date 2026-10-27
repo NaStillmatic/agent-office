@@ -9,18 +9,20 @@
  * `character-` 를 뺀 이름이다. 표에 없는 종류는 scene.ts 가 옷 색 후보(CLOTHES_COLORS)에서 종류끼리 겹치지 않게 자동으로
  * 고르고, 모델은 종류 이름으로 고른다. 이름표 점·테두리·발밑 링·구역 바닥은 옷이 아니라 세션(구역) 색이다.
  */
-export const AGENT_LOOKS: Record<string, { model: string; color: string }> = {
+/** cap: true = 평평한 챙 모자, glasses: true = 안경. 생략하면 둘 다 착용하지 않는다. */
+/** 2D 고해상도 스프라이트(기본) 또는 이전 3D 모델을 선택한다. */
+export const CHARACTER_RENDER_STYLE: 'sprite' | '3d' = 'sprite'
+
+export const AGENT_LOOKS: Record<string, { model: string; color: string; cap?: boolean; glasses?: boolean }> = {
   main: { model: 'male-a', color: '#ff9f1c' },
 }
 
 /**
- * agentType 별 선호 자리(구역 안 자리 번호: 0~2 뒷줄, 3~5 앞줄, 5 는 큰 책상). `main` 은 메인 에이전트.
+ * agentType 별 선호 자리(역할 구역 안 자리 번호: 0~2와 3~5가 마주 본다). 메인은 세션 슬롯에 해당하는 공용 자리를 따로 예약한다.
  * 표에 없는 종류는 SEAT_OTHER 를 먼저 보고, 그 자리가 차 있으면 빈자리 아무 곳에나 앉는다.
  */
-export const SEAT_OF_TYPE: Record<string, number> = {
-  main: 5,
-}
-export const SEAT_OTHER = 2
+export const SEAT_OF_TYPE: Record<string, number> = {}
+export const SEAT_OTHER = 3
 
 /**
  * 메인 에이전트가 늘 자기 자리에 앉아 있게 한다(답을 기다릴 때도 자리에서 '…' 말풍선을 띄운다).

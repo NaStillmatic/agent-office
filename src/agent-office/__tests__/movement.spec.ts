@@ -35,7 +35,7 @@ describe('걷기 이동', () => {
     ]) {
       const w = walker(Array.from({ length: 16 }, (_, i) => ({ x: (i + 1) * 0.25, z: 0 })))
       for (const dt of frames) w.step(dt)
-      expect(w.ch.x).toBeCloseTo(1.6, 10)
+      expect(w.ch.x).toBeCloseTo(1.15, 10)
       expect(w.ch.z).toBe(0)
       expect(w.scene.arrive).not.toHaveBeenCalled()
     }
@@ -45,7 +45,7 @@ describe('걷기 이동', () => {
     const w = walker([{ x: 0.25, z: 0 }, { x: 0.25, z: 0.25 }])
     w.step(0.25)
     expect(w.ch.x).toBe(0.25)
-    expect(w.ch.z).toBeCloseTo(0.15)
+    expect(w.ch.z).toBeCloseTo(0.0375)
     expect(w.scene.arrive).not.toHaveBeenCalled()
   })
 

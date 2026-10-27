@@ -1,8 +1,7 @@
 /**
  * AI 작업 사무실 장면(three.js). 아이소메트릭으로 고정한 정사영 카메라로 내려다보고,
  * 이름표·말풍선은 한글 표시를 위해 CSS2DRenderer 로 올린다.
- * 캐릭터는 Kenney Mini Characters 이고, 걷기·서 있기·앉기는 모델 안의 클립(walk, idle, sit)을 쓴다.
- * 모델에 타이핑 클립이 없어 `sit` 하체에 `interact-*` 상체를 합친 클립으로 대신한다(assets.ts).
+ * 사람형 캐릭터와 관절 애니메이션은 humanCharacter.ts 에서 생성한다.
  */
 import {
   ACESFilmicToneMapping,
@@ -10,6 +9,7 @@ import {
   BoxGeometry,
   AmbientLight,
   AnimationAction,
+  AnimationClip,
   AnimationMixer,
   CanvasTexture,
   CatmullRomCurve3,
@@ -50,7 +50,8 @@ import {
   WebGLRenderer,
 } from 'three'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { createHumanCharacter, HUMAN_HEAD_TOP, HUMAN_SIT_BOTTOM } from './humanCharacter'
+import { createBaristaSprite, createSpritePerson, type SpritePerson } from './spriteCharacters'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import {
   CHARACTER_NAMES,
@@ -86,14 +87,16 @@ import {
   type WallFrame,
   type WallWindow,
 } from './layout'
-import { AGENT_LOOKS, AGENT_NAMES, MAIN_STAYS_SEATED, SEAT_OF_TYPE, SEAT_OTHER } from './office.config'
-import { t } from '../i18n'
+import { AGENT_LOOKS, AGENT_NAMES, CHARACTER_RENDER_STYLE, MAIN_STAYS_SEATED, SEAT_OF_TYPE, SEAT_OTHER } from './office.config'
+import { t, getLocale } from '../i18n'
+import type { Provider } from './providers'
+import { classifyRole, roleZone, roleLabel, pickRoleSeat, sharedSeatForSlot, sharedSlotForSeat } from './roles'
+import { addRoleFurniture } from './roleFurniture'
 import { nightness } from './windowView'
 import { createSeoulBackdrop, panoramaWeights } from './exterior'
 import { FloorElevator } from './elevator'
-import { curvedWindowGeometry, windowArc } from './windowGeometry'
+import { curvedTrimGeometry, curvedWindowGeometry } from './windowGeometry'
 import { instanceStaticMeshes } from './staticMeshes'
-import { drawTvScreen, type UsageInfo } from './tvScreen'
 
 export interface Status {
   state: 'working' | 'waiting' | 'idle' | 'ended'
@@ -105,10 +108,10 @@ export interface AgentInfo extends Status {
   agentType: string
   description: string
 }
-export type { UsageInfo }
 
 export interface SessionInfo {
   id: string
+  provider?: Provider
   /** 세션을 시작한 폴더 이름(서버가 cwd 로 정한다) */
   project: string
   main: Status
@@ -132,23 +135,22 @@ const TERM_LINES = 60
 /** 앉은 사람이 하는 일별 터미널 스크롤 속도(줄/초). 대기 중이면 멈춘다 */
 const TERM_SPEED = { bash: 14, type: 5, read: 2 }
 const FLOOR_CLIP = new Plane(new Vector3(0, 1, 0), 0)
-const WALK_SPEED = 1.6 // 월드 단위/초
+const WALK_SPEED = 1.15 // 월드 단위/초
 const CHAR_SCALE = 1.1
 /** 서 있는 모델의 머리 끝 높이(모델 좌표, 스케일 1 기준) */
-const MODEL_HEAD_TOP = 0.671
+const MODEL_HEAD_TOP = HUMAN_HEAD_TOP
 /** sit 클립이 뿌리를 낮추는 높이(모델 좌표, 스케일 1 기준) */
 const SIT_ROOT_DROP = 0.15
 const CHAR_HEIGHT = MODEL_HEAD_TOP * CHAR_SCALE
 /** chairDesk 방석 윗면 높이(모델 좌표, 의자 스케일 1 기준) */
 const SEAT_TOP = 0.233
 /** 앉은 자세에서 허벅지 아랫면의 모델 좌표 높이(몸통 밑면보다 낮다). 이 면이 방석 윗면에 얹힌다 */
-const SIT_THIGH_BOTTOM = -0.098
+const SIT_THIGH_BOTTOM = HUMAN_SIT_BOTTOM
 const NO_SHADOW = new Set(['rugRound', 'rugDoormat'])
-/** 휴게 공간 소파·1인용 의자의 연회색 천 */
-const SOFA_COLOR = new Color('#c4cec9')
+/** 휴게 공간 소파·1인용 의자의 세이지 그린 패브릭 */
+const SOFA_COLOR = new Color('#9cae9f')
 /** 천 소파라 거의 무광 */
 const SOFA_ROUGHNESS = 0.85
-const SOFA_MODELS = ['loungeSofa', 'loungeChair']
 const TEAM_FLOORS = ['#c3d8d4', '#e1d3bc', '#dfc9cd', '#cedcc3', '#d4cde5', '#e5cfba']
 /** 램프 불빛 색과 한밤 세기 */
 const LAMP_GLOW = '#ffbf73'
@@ -234,7 +236,7 @@ interface SitSpot {
 const deskSit = (s: Seat): SitSpot => ({
   x: s.x,
   z: s.z,
-  yaw: SEAT_YAW,
+  yaw: s.yaw,
   cx: s.cx,
   cz: s.cz,
   seatTop: SEAT_TOP * s.chairHeight,
@@ -286,6 +288,8 @@ interface Char {
   holder: Group
   ring: Group
   mixer: AnimationMixer
+  spritePerson: SpritePerson | null
+  spriteTime: number
   actions: Partial<Record<ClipName, AnimationAction>>
   clips: CharacterModel['clips']
   playing: ClipName | null
@@ -301,9 +305,6 @@ interface Char {
   /** 메인이 막 띄운 에이전트를 아직 못 찾음(spawningAgent) */
   spawning: boolean
 }
-
-/** 컵 위치(오른팔 본 로컬 좌표). 손 정점을 재서 맞춘 값 */
-const CUP_HAND = { x: -0.26, y: 0, z: 0.04 }
 
 /**
  * 서브에이전트 이름표에 쓰는 이름. 어떤 프로젝트의 agentType 이 와도 읽히도록 규칙으로 정한다.
@@ -782,7 +783,7 @@ export class OfficeScene {
   private assets: OfficeAssets | null = null
   private chars = new Map<string, Char>()
   private elevator: { motion: FloorElevator; pod: Group; signal: MeshStandardMaterial } | null = null
-  private barista: { mixer: AnimationMixer; label: HTMLElement } | null = null
+  private barista: { mixer: AnimationMixer; label: HTMLElement; spritePerson: SpritePerson | null; elapsed: number } | null = null
   private zones: (string | null)[] = new Array(ZONE_COUNT).fill(null)
   private zoneMats: MeshBasicMaterial[] = []
   private zoneLabels: { el: HTMLElement; obj: CSS2DObject }[] = []
@@ -816,6 +817,7 @@ export class OfficeScene {
   /** 모니터 몸체 재질. 모든 모니터가 같은 색이라 하나를 나눠 쓴다 */
   private monitorBody: MeshStandardMaterial | null = null
   private deskTemplate: Group | null = null
+  private keyboardTemplate: Group | null = null
   private displayTemplates = new Map<boolean, Group>()
   private staticFurniture: Mesh[] = []
   /** 창문 안에서 이어지는 서울 강변 파노라마 */
@@ -825,13 +827,8 @@ export class OfficeScene {
   private roomLights: { hemi: HemisphereLight; amb: AmbientLight; sun: DirectionalLight } | null = null
   /** 램프마다 갓 재질(밤에 빛남)과 갓 속 점광원 */
   private lamps: { shade: MeshStandardMaterial; light: PointLight }[] = []
-  /** 독립형 TV 화면. 사용량·언어가 바뀌거나(tvDirty) 분이 바뀌면 다시 그린다 */
-  private tv: { canvas: HTMLCanvasElement; tex: Texture } | null = null
-  private usage: UsageInfo | null = null
-  private tvDirty = true
-  private tvMinute = -1
+
   /** (모델 번호, 옷 색) 별 색상표 변형 */
-  private clothesTextures = new Map<string, CanvasTexture>()
   /** 벽 액자의 텍스처·재질·지오메트리 */
   private frameDisposables: { dispose(): void }[] = []
   private raf = 0
@@ -967,36 +964,27 @@ export class OfficeScene {
     this.scene.add(slab)
 
     // Compact, softly rounded islands distinguish work pods and shared spaces.
-    this.floorPatch(3.35, 5.4, 0.45, '#dfccb0', 1.675, CAFE.z)
-    this.floorPatch(3.15, 3.65, 0.45, '#cbd9d2', 1.65, LAYOUT.rug.z)
+    this.floorPatch(4.3, 7.5, 0.45, '#dfccb0', CAFE.baristaX, CAFE.z - 0.5)
+    this.floorPatch(3.15, 3.65, 0.45, '#cbd9d2', 2.15, LAYOUT.rug.z)
     for (let z = 0; z < ZONE_COUNT; z++) {
       const o = ZONE_ORIGIN[z]
       const mat = this.floorPatch(ZONE_SIZE.w, ZONE_SIZE.d, 0.34, TEAM_FLOORS[z], o.x + 2.1, o.z + 0.75)
+      mat.visible = z !== 3
       this.zoneMats.push(mat)
 
       const el = document.createElement('div')
       el.className = 'ao-zone'
       el.style.setProperty('--team', TEAM_COLORS[z])
-      el.style.display = 'none'
+      el.textContent = roleLabel(z, getLocale())
       const obj = new CSS2DObject(el)
+      obj.visible = z !== 3
       obj.center.set(0.5, 0.5)
       obj.position.set(o.x + 2.1, 0.05, o.z + 2.22)
       this.scene.add(obj)
       this.zoneLabels.push({ el, obj })
     }
 
-    // 소파 천과 러그. 모델마다 따로 읽은 재질이라 같은 재질 이름('carpet')이어도 서로 번지지 않는다
-    for (const name of SOFA_MODELS) {
-      a.furniture.get(name)?.root.traverse((o) => {
-        const m = (o as Mesh).material as MeshStandardMaterial | undefined
-        if (m?.name === 'carpet') {
-          const c = m.clone()
-          c.color.copy(SOFA_COLOR)
-          c.roughness = SOFA_ROUGHNESS
-          ;(o as Mesh).material = c
-        }
-      })
-    }
+    // Lounge upholstery uses the custom rounded furniture below.
     a.furniture.get('rugRound')?.root.traverse((o) => {
       const m = (o as Mesh).material as MeshStandardMaterial | undefined
       const color = m && RUG_COLORS[m.name]
@@ -1008,13 +996,13 @@ export class OfficeScene {
     })
 
     for (const it of LAYOUT.items) this.placeItem(it)
+    addRoleFurniture(this.scene)
     this.placeShelfBooks()
     this.placeTrophies()
     this.placeEspresso()
     this.placeBarista()
     this.placeCafeDetails()
     this.placeElevator()
-    this.placeTv()
     for (const f of LAYOUT.frames) this.placeFrame(f)
     this.exterior = createSeoulBackdrop(this.renderer)
     const squareWindows = new URLSearchParams(location.search).get('window') === 'square'
@@ -1066,12 +1054,23 @@ export class OfficeScene {
     box(0.68, 0.018, 0.25, steel, 0, 0.325, -0.045)
     for (const side of [-1, 1]) {
       box(0.025, 0.195, 0.23, body, side * 0.3275, 0.13, -0.055)
-      // Exposed crossed supports form Slayer's distinctive side silhouette.
+      // The side X frames run from the body down to the four rubber feet.
       for (const angle of [-0.72, 0.72]) {
-        const frame = box(0.026, 0.27, 0.029, steel, side * 0.356, 0.015, 0)
+        const frame = box(0.026, 0.30, 0.035, steel, side * 0.339, -0.01, 0)
         frame.rotation.x = angle
       }
-      for (const z of [-0.10, 0.10]) cyl(0.018, 0.021, 0.03, dark, side * 0.35, 0, z)
+      for (const z of [-0.10, 0.10]) {
+        const footGeo = new LatheGeometry([
+          new Vector2(0.020, 0), new Vector2(0.022, 0.015),
+          new Vector2(0.020, 0.037), new Vector2(0.015, 0.050), new Vector2(0, 0.054),
+        ], 16)
+        const foot = new Mesh(footGeo, steel)
+        foot.position.set(side * 0.339, 0, z)
+        g.add(foot)
+        this.frameDisposables.push(footGeo)
+      }
+      const hub = cyl(0.025, 0.025, 0.01, steel, side * 0.355, 0.135, 0)
+      hub.rotation.z = Math.PI / 2
       box(0.02, 0.035, 0.25, wood, side * 0.33, 0.343, -0.045)
       const knob = cyl(0.025, 0.025, 0.025, wood, side * 0.30, 0.24, 0.07)
       knob.rotation.x = Math.PI / 2
@@ -1194,38 +1193,39 @@ export class OfficeScene {
 
   /** Café staff remain in place independently of incoming agent sessions. */
   private placeBarista() {
-    const modelIdx = charOf('female-d')
-    const def = this.assets!.characters[modelIdx]
-    const model = cloneSkinned(def.root)
-    model.scale.setScalar(CHAR_SCALE)
+    const spritePerson = CHARACTER_RENDER_STYLE === 'sprite' ? createBaristaSprite() : null
+    const barista3d = spritePerson ? null : createHumanCharacter(charOf('female-d'), '#596f60', { outfit: 'shirt' })
+    const model = barista3d?.root ?? new Group()
     model.position.set(LAYOUT.barista.x, 0, LAYOUT.barista.z)
     model.rotation.y = LAYOUT.barista.yaw
-    const clothes = this.clothesTexture(modelIdx, '#596f60')
-    model.traverse((o) => {
-      const mesh = o as Mesh
-      if (!mesh.isMesh) return
-      if (mesh.name === 'body-mesh') {
-        const material = (mesh.material as MeshStandardMaterial).clone()
-        material.map = clothes
-        mesh.material = material
-      }
-      mesh.castShadow = true
-      mesh.frustumCulled = false
-    })
-    const apron = new Mesh(new BoxGeometry(0.23, 0.27, 0.035), new MeshStandardMaterial({ color: '#424e43', roughness: 0.95 }))
-    apron.position.set(0, 0.32, 0.12)
-    model.add(apron)
+    let mixer: AnimationMixer
+    if (spritePerson) {
+      model.add(spritePerson.sprite)
+      spritePerson.update(0, 'idle', 0, null, 0)
+      mixer = new AnimationMixer(model)
+    } else {
+      model.scale.setScalar(CHAR_SCALE)
+      model.traverse((o) => {
+        const mesh = o as Mesh
+        if (!mesh.isMesh) return
+        mesh.castShadow = true
+        mesh.frustumCulled = false
+      })
+      const apron = new Mesh(new BoxGeometry(0.23, 0.27, 0.035), new MeshStandardMaterial({ color: '#424e43', roughness: 0.95 }))
+      apron.position.set(0, 0.32, 0.12)
+      model.add(apron)
+      mixer = new AnimationMixer(model)
+      mixer.clipAction(barista3d!.clips.coffee).play()
+    }
     this.scene.add(model)
-    const mixer = new AnimationMixer(model)
-    mixer.clipAction(def.clips.idle).play()
     const label = document.createElement('div')
     label.className = 'ao-zone'
     label.style.setProperty('--team', '#768b69')
     label.textContent = t().barista
     const marker = new CSS2DObject(label)
-    marker.position.set(LAYOUT.barista.x, CHAR_HEIGHT + 0.10, LAYOUT.barista.z)
+    marker.position.set(LAYOUT.barista.x, CHAR_HEIGHT + 0.32, LAYOUT.barista.z)
     this.scene.add(marker)
-    this.barista = { mixer, label }
+    this.barista = { mixer, label, spritePerson, elapsed: 0 }
   }
 
   private placeCafeDetails() {
@@ -1298,7 +1298,7 @@ export class OfficeScene {
     const hopperGlass = new MeshStandardMaterial({ color: '#c8dde1', transparent: true, opacity: 0.4, roughness: 0.15, depthWrite: false })
     const beans = new MeshStandardMaterial({ color: '#59402e', roughness: 0.9 })
     const screen = new MeshStandardMaterial({ color: '#82c6dd', emissive: '#5aafce', emissiveIntensity: 0.3, roughness: 0.3 })
-    for (const dz of [0.55, 0.81]) {
+    for (const dz of [0.85, 1.30]) {
       const grinder = new Group()
       const base = new Mesh(new BoxGeometry(0.17, 0.025, 0.20), dark)
       base.position.set(0, 0.013, 0.025)
@@ -1326,7 +1326,7 @@ export class OfficeScene {
       }
       this.addGrinderSideLogo(grinder, 0.078, 0.15, 0.065)
       grinder.rotation.y = Math.PI / 2
-      grinder.position.set(CAFE.counterX, LAYOUT.espresso.y, CAFE.z + dz)
+      grinder.position.set(CAFE.counterX, LAYOUT.espresso.y, CAFE.z + dz + 0.25)
       grinder.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
       this.scene.add(grinder)
     }
@@ -1382,7 +1382,7 @@ export class OfficeScene {
     grinder.add(hopper, fill, lid, chute, dosingCup)
     this.addGrinderSideLogo(grinder, 0.108, 0.28, 0.08)
     grinder.rotation.y = -Math.PI / 2
-    grinder.position.set(CAFE.cupX, LAYOUT.espresso.y, CAFE.z - 0.46)
+    grinder.position.set(CAFE.cupX, LAYOUT.espresso.y, CAFE.startZ + 0.25)
     grinder.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
     this.scene.add(grinder)
     // Acaia-inspired scales sit flush in the stainless counter, one beneath each server.
@@ -1404,7 +1404,7 @@ export class OfficeScene {
     const displayTexture = new CanvasTexture(displayCanvas)
     displayTexture.colorSpace = SRGBColorSpace
     const displayMaterial = new MeshBasicMaterial({ map: displayTexture, toneMapped: false })
-    for (const z of [CAFE.z - 0.08, CAFE.z + 0.26, CAFE.z + 0.60]) {
+    for (const z of [CAFE.z + 0.16, CAFE.z + 0.65, CAFE.z + 1.14]) {
       const scale = new Group()
       // The casing is embedded below the worktop; only a thin steel seam and white face show.
       const bezel = new Mesh(new BoxGeometry(0.28, 0.018, 0.31), metal)
@@ -1426,8 +1426,13 @@ export class OfficeScene {
       const rim = new Mesh(new TorusGeometry(0.041, 0.004, 6, 24), glass)
       rim.rotation.x = Math.PI / 2
       rim.position.y = 0.137
-      const handle = new Mesh(new TorusGeometry(0.035, 0.007, 8, 20, Math.PI * 1.6), black)
-      handle.position.set(0.076, 0.08, 0)
+      const handlePath = new CatmullRomCurve3([
+        new Vector3(0.057, 0.115, 0), new Vector3(0.090, 0.112, 0),
+        new Vector3(0.112, 0.091, 0), new Vector3(0.111, 0.061, 0),
+        new Vector3(0.091, 0.043, 0), new Vector3(0.068, 0.049, 0),
+      ])
+      const handle = new Mesh(new TubeGeometry(handlePath, 24, 0.007, 8, false), glass)
+      handle.scale.x = -1 // Face the barista standing in the aisle.
       const dripper = new Mesh(new CylinderGeometry(0.067, 0.022, 0.08, 24, 1, true), ceramic)
       dripper.position.y = 0.19
       const plate = new Mesh(new CylinderGeometry(0.054, 0.054, 0.008, 24), ceramic)
@@ -1465,7 +1470,7 @@ export class OfficeScene {
     kettle.add(kettleBase, kettleBody, kettleLid, knob, spout, handle, kettleDial, screen)
     kettle.rotation.y = Math.PI
     kettle.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
-    for (const z of [CAFE.z + 1.1, CAFE.z + 1.55]) {
+    for (const z of [CAFE.z + 1.65, CAFE.z + 2.10, CAFE.z + 2.55]) {
       const station = kettle.clone(true)
       station.position.set(CAFE.cupX, LAYOUT.espresso.y, z)
       this.scene.add(station)
@@ -1651,90 +1656,13 @@ export class OfficeScene {
     const frameMat = new MeshStandardMaterial({ color: '#6f8087', metalness: 0.35, roughness: 0.48 })
     const sillMat = new MeshStandardMaterial({ color: '#d3d9d9', roughness: 0.65 })
     this.frameDisposables.push(geometry, glassMat, frameMat, sillMat)
-    for (const y of [0.035, height]) {
-      const path = new CatmullRomCurve3(windowArc(WINDOW_RADIUS).map(p => p.setY(y)))
-      const railGeo = new TubeGeometry(path, 64, y === height ? 0.024 : 0.08, 8, false)
-      this.scene.add(new Mesh(railGeo, y === height ? frameMat : sillMat))
-      this.frameDisposables.push(railGeo)
-    }
-  }
-
-  /**
-   * 독립형 TV: 광택 있는 검은 벽걸이 몸체(아래 베젤이 조금 두껍고 빨간 전원 LED), 화면에는 사용량(tvScreen)과
-   * 비스듬한 유리 반사광. 화면은 조명을 받지 않는 재질이라 늘 또렷하다. 벽 장식이라 이동 막힘에는 넣지 않는다
-   */
-  private placeTv() {
-    const { x, y, z, w, h } = LAYOUT.tv
-    const side = 0.022 // 양옆·위 베젤
-    const chin = 0.045 // 아래 베젤(LED 자리)
-    const sw = w - 2 * side
-    const sh = h - side - chin
-    const cv = document.createElement('canvas')
-    cv.width = 640
-    cv.height = Math.round((640 * sh) / sw)
-    const tex = new CanvasTexture(cv)
-    tex.colorSpace = SRGBColorSpace
-    tex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
-    // 화면 유리 반사광: 왼쪽 위에서 비스듬히 지나가는 옅은 흰 띠
-    const glare = document.createElement('canvas')
-    glare.width = 256
-    glare.height = 128
-    const gg = glare.getContext('2d')!
-    const band = gg.createLinearGradient(0, 0, 256, 128)
-    band.addColorStop(0, 'rgba(255,255,255,0.10)')
-    band.addColorStop(0.32, 'rgba(255,255,255,0.05)')
-    band.addColorStop(0.33, 'rgba(255,255,255,0)')
-    band.addColorStop(1, 'rgba(255,255,255,0)')
-    gg.fillStyle = band
-    gg.fillRect(0, 0, 256, 128)
-    const glareTex = new CanvasTexture(glare)
-    const bodyGeo = new BoxGeometry(w, h, 0.05)
-    const screenGeo = new PlaneGeometry(sw, sh)
-    const ledGeo = new BoxGeometry(0.018, 0.008, 0.004)
-    const bodyMat = new MeshStandardMaterial({ color: '#121317', roughness: 0.25, metalness: 0.5 })
-    const screenMat = new MeshBasicMaterial({ map: tex, toneMapped: false })
-    const glareMat = new MeshBasicMaterial({ map: glareTex, transparent: true, depthWrite: false, toneMapped: false })
-    const ledMat = new MeshBasicMaterial({ color: '#ff5a4a', toneMapped: false })
-    this.frameDisposables.push(tex, glareTex, bodyGeo, screenGeo, ledGeo, bodyMat, screenMat, glareMat, ledMat)
-    const g = new Group()
-    const body = new Mesh(bodyGeo, bodyMat)
-    body.castShadow = true
-    const screen = new Mesh(screenGeo, screenMat)
-    screen.position.set(0, (chin - side) / 2, 0.0255)
-    const glass = new Mesh(screenGeo, glareMat)
-    glass.position.set(0, (chin - side) / 2, 0.027)
-    const led = new Mesh(ledGeo, ledMat)
-    led.position.set(w / 2 - 0.08, -h / 2 + chin / 2, 0.026)
-    g.add(body, screen, glass, led)
-    // 낮은 메탈 스탠드 위에 화면을 올린다. 앞면(+z)이 방 안쪽이다
-    g.position.set(x, y, z)
-    const standMat = new MeshStandardMaterial({ color: '#aebac1', metalness: 0.6, roughness: 0.3 })
-    const standGeo = new BoxGeometry(0.035, y - h / 2, 0.04)
-    const baseGeo = new BoxGeometry(w * 0.8, 0.035, 0.35)
-    for (const dx of [-w * 0.28, w * 0.28]) {
-      const leg = new Mesh(standGeo, standMat)
-      leg.position.set(x + dx, (y - h / 2) / 2, z)
-      this.scene.add(leg)
-    }
-    const base = new Mesh(baseGeo, standMat)
-    base.position.set(x, 0.025, z)
-    this.scene.add(base)
-    this.frameDisposables.push(standMat, standGeo, baseGeo)
-    this.scene.add(g)
-    this.tv = { canvas: cv, tex }
-    this.tvDirty = true
-  }
-
-  /** 사용량·언어가 바뀌었거나 분이 바뀌면(시계·남은 시간) TV 화면을 다시 그린다 */
-  private updateTv() {
-    if (!this.tv) return
-    const now = Date.now()
-    const minute = Math.floor(now / 60_000)
-    if (!this.tvDirty && minute === this.tvMinute) return
-    this.tvDirty = false
-    this.tvMinute = minute
-    drawTvScreen(this.tv.canvas, this.usage, now, t())
-    this.tv.tex.needsUpdate = true
+    // Match the straight windows' sill and top rail profiles at both tangents.
+    const sill = curvedTrimGeometry(WINDOW_RADIUS, 0, 0.085, -0.055, 0.185)
+    const top = curvedTrimGeometry(WINDOW_RADIUS, height - 0.016, height + 0.016, -0.07, 0.07)
+    const sillMesh = new Mesh(sill, sillMat)
+    sillMesh.receiveShadow = true
+    this.scene.add(sillMesh, new Mesh(top, frameMat))
+    this.frameDisposables.push(sill, top)
   }
 
   /**
@@ -1829,7 +1757,7 @@ export class OfficeScene {
   private modernDesk() {
     const group = new Group()
     const oak = new MeshStandardMaterial({ color: '#c6a478', roughness: 0.72 })
-    const ivory = new MeshStandardMaterial({ color: '#e7e4da', roughness: 0.7 })
+    const ivory = new MeshStandardMaterial({ color: '#f3f3ef', roughness: 0.7 })
     const metal = new MeshStandardMaterial({ color: '#465254', metalness: 0.35, roughness: 0.5 })
     const felt = new MeshStandardMaterial({ color: '#708681', roughness: 1 })
     const recess = new MeshStandardMaterial({ color: '#89918b', roughness: 0.9 })
@@ -1847,23 +1775,40 @@ export class OfficeScene {
     }
     rounded(0.73, 0.035, 0.56, 0.012, oak, 0, 0.3625, 0)
     box(0.68, 0.014, 0.51, ivory, 0, 0.338, 0)
-    // Inset storage pedestal leaves the central knee space open.
-    rounded(0.145, 0.302, 0.43, 0.008, ivory, -0.265, 0.184, -0.015)
-    box(0.124, 0.032, 0.38, metal, -0.265, 0.021, -0.015)
-    for (const y of [0.145, 0.245]) {
-      box(0.126, 0.004, 0.003, recess, -0.265, y, 0.202)
-      box(0.058, 0.006, 0.009, metal, -0.265, y + 0.064, 0.207)
-    }
-    // Open rectangular metal frame on the opposite side.
-    for (const z of [-0.21, 0.21]) box(0.025, 0.32, 0.025, metal, 0.296, 0.17, z)
-    box(0.027, 0.018, 0.445, metal, 0.296, 0.015, 0)
-    box(0.49, 0.024, 0.022, metal, 0.04, 0.306, -0.19)
-    box(0.36, 0.026, 0.065, metal, 0.04, 0.315, -0.19)
+    // Full white slab supports, with clear knee space between them.
+    for (const x of [-0.29, 0.29]) box(0.045, 0.335, 0.49, ivory, x, 0.1675, 0)
     rounded(0.39, 0.002, 0.21, 0.0008, felt, 0.035, 0.381, 0.105)
     // Flush cable outlet behind the monitors, with a dark inset.
     box(0.09, 0.002, 0.027, metal, 0, 0.381, -0.23)
     box(0.069, 0.001, 0.009, recess, 0, 0.3825, -0.23)
     return group
+  }
+
+  /** Slim silver keyboard, with the rear edge higher than the edge facing the user. */
+  private modernKeyboard() {
+    const root = new Group()
+    const board = new Group()
+    board.rotation.x = -0.045
+    board.position.y = 0.004
+    const silver = new MeshStandardMaterial({ color: '#cbd1d2', metalness: 0.55, roughness: 0.42 })
+    const keys = new MeshStandardMaterial({ color: '#f6f6f2', roughness: 0.68 })
+    const base = new Mesh(new RoundedBoxGeometry(0.30, 0.008, 0.12, 2, 0.003), silver)
+    base.position.y = 0.004
+    board.add(base)
+    const keyGeometry = new RoundedBoxGeometry(0.016, 0.003, 0.014, 2, 0.001)
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 13; col++) {
+        if (row === 0 && col >= 4 && col <= 8) continue
+        const key = new Mesh(keyGeometry, keys)
+        key.position.set((col - 6) * 0.021, 0.0095, -0.040 + row * 0.025)
+        board.add(key)
+      }
+    }
+    const space = new Mesh(new RoundedBoxGeometry(0.096, 0.003, 0.014, 2, 0.001), keys)
+    space.position.set(0, 0.0095, -0.040)
+    board.add(space)
+    root.add(board)
+    return root
   }
 
   private cafeRoundTable() {
@@ -1880,7 +1825,7 @@ export class OfficeScene {
     return group
   }
 
-  private studioDisplay(withComputer: boolean) {
+  private studioDisplay() {
     const group = new Group()
     const aluminum = new MeshStandardMaterial({ name: 'metalDark', color: MONITOR_BODY, metalness: 0.65, roughness: 0.28 })
     const bezel = new MeshStandardMaterial({ color: '#23282c', roughness: 0.4 })
@@ -1893,19 +1838,14 @@ export class OfficeScene {
     // A uniform black bezel replaces the all-in-one's deep silver chin.
     box(0.399, 0.251, 0.022, aluminum, 0, 0.2107, 0)
     box(0.393, 0.245, 0.004, bezel, 0, 0.2107, 0.014)
-    box(0.038, 0.092, 0.024, aluminum, 0, 0.046, -0.015)
-    box(0.15, 0.008, 0.115, aluminum, 0, 0.004, 0.01)
-    if (withComputer) {
-      // One separate, compact Mac Studio-style chassis beside the right display.
-      const dark = new MeshStandardMaterial({ color: '#424b50', roughness: 0.7 })
-      const chassis = new Mesh(new RoundedBoxGeometry(0.14, 0.065, 0.14, 2, 0.009), aluminum)
-      chassis.position.set(0.28, 0.037, 0.02)
-      group.add(chassis)
-      box(0.121, 0.006, 0.121, dark, 0.28, 0.004, 0.02)
-      for (const x of [0.248, 0.275]) box(0.018, 0.004, 0.002, dark, x, 0.035, 0.091)
-      box(0.026, 0.0025, 0.002, dark, 0.305, 0.035, 0.091)
-      box(0.003, 0.003, 0.002, new MeshBasicMaterial({ color: '#f2f5ef' }), 0.328, 0.021, 0.091)
-    }
+    // A slim aluminum support slopes gently into a low, rounded rectangular foot.
+    const support = new Mesh(new RoundedBoxGeometry(0.052, 0.105, 0.009, 3, 0.004), aluminum)
+    support.position.set(0, 0.057, -0.018)
+    support.rotation.x = -0.12
+    group.add(support)
+    const foot = new Mesh(new RoundedBoxGeometry(0.15, 0.006, 0.125, 3, 0.003), aluminum)
+    foot.position.set(0, 0.003, 0.004)
+    group.add(foot)
     const face = new PlaneGeometry(0.379, 0.2314)
     face.translate(0, 0.2107, 0.018)
     group.add(new Mesh(face, idle))
@@ -1916,13 +1856,49 @@ export class OfficeScene {
     return group
   }
 
+  /** Low rounded upholstery, preserving the layout's 0.23 seat top and 0.41 depth. */
+  private loungeFurniture(single: boolean) {
+    const group = new Group()
+    const width = single ? 0.49 : 0.98
+    const fabric = new MeshStandardMaterial({ color: SOFA_COLOR, roughness: SOFA_ROUGHNESS })
+    const cushion = new MeshStandardMaterial({ color: '#b5c2b0', roughness: 1 })
+    const wood = new MeshStandardMaterial({ color: '#76604d', roughness: 0.85 })
+    const round = (w: number, h: number, d: number, radius: number, x: number, y: number, z: number, material = fabric) => {
+      const mesh = new Mesh(new RoundedBoxGeometry(w, h, d, 4, radius), material)
+      mesh.position.set(x, y, z)
+      group.add(mesh)
+      return mesh
+    }
+    round(width - 0.03, 0.12, 0.38, 0.025, 0, 0.12, 0)
+    round(width - 0.05, 0.24, 0.10, 0.035, 0, 0.28, -0.155)
+    for (const side of [-1, 1]) {
+      round(0.075, 0.19, 0.38, 0.035, side * (width / 2 - 0.0375), 0.24, 0)
+      for (const end of [-1, 1]) {
+        const foot = new Mesh(new CylinderGeometry(0.018, 0.015, 0.065, 10), wood)
+        foot.position.set(side * (width / 2 - 0.09), 0.0325, end * 0.13)
+        group.add(foot)
+      }
+    }
+    const count = single ? 1 : 2
+    const seatWidth = (width - 0.18) / count
+    for (let i = 0; i < count; i++) {
+      const x = (i - (count - 1) / 2) * seatWidth
+      round(seatWidth - 0.012, 0.07, 0.30, 0.018, x, 0.195, 0.045, cushion)
+      const back = round(seatWidth - 0.014, 0.20, 0.085, 0.028, x, 0.31, -0.105, cushion)
+      back.rotation.x = -0.10
+    }
+    return group
+  }
+
   private placeItem(it: Item) {
     const m = this.assets!.furniture.get(it.model)
     if (!m) return
     const s = it.s ?? 1
     const obj = it.model === 'desk' ? (this.deskTemplate ??= this.modernDesk()).clone(true)
+      : it.model === 'loungeSofa' || it.model === 'loungeChair' ? this.loungeFurniture(it.model === 'loungeChair')
       : it.model === 'tableRound' ? this.cafeRoundTable()
-      : it.model === 'computerScreen' ? this.displayTemplate(it.screenKind === 'terminal').clone(true)
+      : it.model === 'computerKeyboard' ? (this.keyboardTemplate ??= this.modernKeyboard()).clone(true)
+      : it.model === 'computerScreen' ? this.displayTemplate().clone(true)
       : m.root.clone(true)
     obj.scale.set(it.sx ?? s, it.sy ?? s, it.sz ?? s)
     const depth = m.size.z * (it.sz ?? s)
@@ -1940,7 +1916,7 @@ export class OfficeScene {
       mesh.castShadow = shadow
       mesh.receiveShadow = true
     })
-    if (['kitchenCabinet', 'kitchenSink', 'tableCoffee', 'sideTable', 'chairRounded', 'computerKeyboard', 'computerMouse', 'pottedPlant'].includes(it.model)) {
+    if (['kitchenCabinet', 'kitchenSink', 'tableCoffee', 'sideTable', 'chairRounded', 'computerMouse', 'pottedPlant'].includes(it.model)) {
       obj.traverse((o) => {
         const mesh = o as Mesh
         if (!mesh.isMesh) return
@@ -1964,7 +1940,7 @@ export class OfficeScene {
     if (it.model === 'coatRackStanding') this.hangClothes(obj)
     if (it.model === 'rugDoormat') this.dressDoormat(obj)
     if (it.model.startsWith('lamp')) this.wireLamp(obj, m.size.y)
-    if (it.model === 'desk' || it.model === 'computerScreen') {
+    if (it.model === 'desk' || it.model === 'computerScreen' || it.model === 'computerKeyboard') {
       obj.traverse((o) => {
         if ((o as Mesh).isMesh) this.staticFurniture.push(o as Mesh)
       })
@@ -1972,11 +1948,11 @@ export class OfficeScene {
     this.scene.add(obj)
   }
 
-  private displayTemplate(withComputer: boolean) {
-    let template = this.displayTemplates.get(withComputer)
+  private displayTemplate() {
+    let template = this.displayTemplates.get(false)
     if (!template) {
-      template = this.studioDisplay(withComputer)
-      this.displayTemplates.set(withComputer, template)
+      template = this.studioDisplay()
+      this.displayTemplates.set(false, template)
     }
     return template
   }
@@ -2165,7 +2141,7 @@ export class OfficeScene {
             this.terminalBase = terminalTexture(aniso)
             this.frameDisposables.push(this.terminalBase)
           }
-          const tex = this.terminalBase.clone()
+          const tex = screen.term ?? this.terminalBase.clone()
           tex.offset.y = 1 - tex.repeat.y // 맨 윗줄부터 보인다
           screen.term = tex
           content = new MeshBasicMaterial({ map: tex, toneMapped: false })
@@ -2239,11 +2215,12 @@ export class OfficeScene {
         this.update(dt)
         if (this.barista) {
           this.barista.mixer.update(dt)
+          this.barista.elapsed += dt
+          this.barista.spritePerson?.update(0, 'work', this.barista.elapsed, null, 0)
           this.barista.label.textContent = t().barista
         }
         this.updateScreens(dt)
         this.updateExterior()
-        this.updateTv()
       }
       this.renderer.render(this.scene, this.camera)
       this.labelRenderer.render(this.scene, this.camera)
@@ -2264,8 +2241,12 @@ export class OfficeScene {
     this.wheelTarget?.removeEventListener('wheel', this.onWheel)
     this.canvas.removeEventListener('click', this.onCanvasClick)
     this.barista?.mixer.stopAllAction()
+    this.barista?.spritePerson?.dispose()
     this.barista = null
-    for (const ch of this.chars.values()) ch.mixer.stopAllAction()
+    for (const ch of this.chars.values()) {
+      ch.mixer.stopAllAction()
+      ch.spritePerson?.dispose()
+    }
     this.chars.clear()
     const disposed = new Set<unknown>()
     const disposeTexture = (t: unknown) => {
@@ -2290,7 +2271,7 @@ export class OfficeScene {
       else if (mat) disposeMaterial(mat)
     })
     // Template materials can have been replaced by the shared screen materials.
-    for (const template of [this.deskTemplate, ...this.displayTemplates.values()]) {
+    for (const template of [this.deskTemplate, this.keyboardTemplate, ...this.displayTemplates.values()]) {
       template?.traverse((o) => {
         const mat = (o as Mesh).material
         if (Array.isArray(mat)) mat.forEach(disposeMaterial)
@@ -2298,9 +2279,8 @@ export class OfficeScene {
       })
     }
     this.deskTemplate = null
+    this.keyboardTemplate = null
     this.displayTemplates.clear()
-    for (const t of this.clothesTextures.values()) t.dispose()
-    this.clothesTextures.clear()
     for (const d of this.frameDisposables) d.dispose()
     this.frameDisposables = []
     for (const m of [...this.teamRingMats, ...this.teamDiscMats]) m.dispose()
@@ -2318,15 +2298,6 @@ export class OfficeScene {
         else if (mat) disposeMaterial(mat)
       }),
     )
-    this.assets?.characters.forEach((c) =>
-      c.root.traverse((o) => {
-        const mesh = o as Mesh
-        mesh.geometry?.dispose()
-        const mat = mesh.material as Material | Material[] | undefined
-        if (Array.isArray(mat)) mat.forEach(disposeMaterial)
-        else if (mat) disposeMaterial(mat)
-      }),
-    )
     this.scene.clear()
     this.labelRenderer.domElement.remove()
     this.renderer.dispose()
@@ -2337,7 +2308,13 @@ export class OfficeScene {
   // ───────────────────────── 세션 반영 ─────────────────────────
 
   /** now 는 스냅샷의 서버 시각(ms). 대기 경과 시간은 이 값과 lastAt 의 차이로만 잰다 */
-  sync(sessions: SessionInfo[], now?: number) {
+  sync(sessions: SessionInfo[], now?: number, filterChanged = false) {
+    if (filterChanged) {
+      const visible = new Set(sessions.map(s => s.id))
+      for (const ch of [...this.chars.values()]) if (!visible.has(ch.session)) this.disposeChar(ch)
+      this.zones = this.zones.map(id => id && visible.has(id) ? id : null)
+      for (const id of this.evicting) if (!visible.has(id)) this.evicting.delete(id)
+    }
     if (now !== undefined) this.clock = { now, at: performance.now() }
     if (!this.assets) {
       this.pending = sessions
@@ -2357,6 +2334,15 @@ export class OfficeScene {
     this.zones = plan.zones
     for (const id of plan.evict) this.evicting.add(id)
 
+    // A newly visible main reclaims its reserved shared desk from a generic subagent.
+    for (const ch of this.chars.values()) {
+      if (ch.isMain || ch.leaving || ch.seat?.zone !== 5) continue
+      const owner = this.zones[sharedSlotForSeat(ch.seat.local)]
+      if (!owner || live.get(owner)?.main.state === 'ended') continue
+      ch.seat = this.seatFor(ch.zone, ch.typeKey, false, ch.title, ch.key)
+      ch.spot = ch.seat ? null : LAYOUT.spots[5][ch.zone % LAYOUT.spots[5].length]
+      this.route(ch, ch.seat ? 'seat' : 'spot')
+    }
     const wanted = new Set<string>()
     for (const s of live.values()) {
       const zone = this.zones.indexOf(s.id)
@@ -2379,12 +2365,11 @@ export class OfficeScene {
           false,
         )
       }
-      const sid = t().session(s.id.slice(0, 6))
-      this.zoneLabels[zone].el.textContent = this.showProject ? `${s.project} · ${sid}` : sid
     }
     for (const ch of this.chars.values()) {
       if (!wanted.has(ch.key)) ch.leaving = true
     }
+    this.reassignWaitingSeats()
   }
 
   /** 서버 시각 기준 현재. 서버는 변화가 없으면 스냅샷을 다시 보내지 않으므로 받은 뒤 흐른 시간을 더한다 */
@@ -2392,15 +2377,30 @@ export class OfficeScene {
     return this.clock ? this.clock.now + (performance.now() - this.clock.at) : null
   }
 
-  private seatFor(zone: number, type: string, isMain: boolean): Seat | null {
+  private seatFor(zone: number, type: string, isMain: boolean, title: string, except?: string): Seat | null {
     const taken = new Set(
-      [...this.chars.values()].filter((c) => !c.removed && c.seat).map((c) => c.seat!.id),
+      [...this.chars.values()].filter(c => !c.removed && c.key !== except && c.seat).map(c => c.seat!.id),
     )
-    const local = isMain ? SEAT_OF_TYPE.main : (SEAT_OF_TYPE[type] ?? SEAT_OTHER)
-    const mine = LAYOUT.seats.filter((s) => s.zone === zone)
-    const pref = mine.find((s) => s.local === local)
-    if (pref && !taken.has(pref.id)) return pref
-    return mine.find((s) => !taken.has(s.id)) ?? null
+    const home = roleZone(type, title, isMain)
+    if (!isMain && home === 5) {
+      // Preserve one home seat per visible main even before it has spawned.
+      for (const [index, session] of this.zones.entries()) {
+        if (session && this.lastSessions.find(s => s.id === session)?.main.state !== 'ended') taken.add(`Z5-${sharedSeatForSlot(index)}`)
+      }
+    }
+    return pickRoleSeat(LAYOUT.seats, taken, home, isMain ? sharedSeatForSlot(zone) : (SEAT_OF_TYPE[type] ?? SEAT_OTHER))
+  }
+
+  /** A waiting worker can claim a desk once a previous occupant has left. */
+  private reassignWaitingSeats() {
+    for (const ch of this.chars.values()) {
+      if (ch.removed || ch.leaving || ch.seat || !this.live.has(ch.session)) continue
+      const seat = this.seatFor(ch.zone, ch.typeKey, ch.isMain, ch.title, ch.key)
+      if (!seat) continue
+      ch.seat = seat
+      ch.spot = null
+      if (ch.goal === 'spot') this.route(ch, 'seat')
+    }
   }
 
   private makeChar(
@@ -2413,6 +2413,8 @@ export class OfficeScene {
     | 'holder'
     | 'ring'
     | 'mixer'
+    | 'spritePerson'
+    | 'spriteTime'
     | 'clips'
     | 'label'
     | 'tagEl'
@@ -2422,18 +2424,20 @@ export class OfficeScene {
     | 'dotsEl'
     | 'nameTextEl'
   > {
-    const a = this.assets!
     const modelIdx = charIndexOf(type, isMain, variant)
-    const def = a.characters[modelIdx]
-    const model = cloneSkinned(def.root)
+    const look = AGENT_LOOKS[isMain ? 'main' : type]
+    const useSprite = CHARACTER_RENDER_STYLE === 'sprite' && !look?.glasses
+    const clothingColor = isMain && zone > 0 ? CLOTHES_COLORS[(zone * 3) % CLOTHES_COLORS.length] : this.clothesColorOf(type, isMain)
+    const spritePerson = useSprite ? createSpritePerson(modelIdx >= 6 ? 'female' : 'male', look?.cap ?? false, clothingColor) : null
+    const def = useSprite
+      ? { root: new Group(), clips: Object.fromEntries((['idle', 'walk', 'sit', 'work', 'read', 'wait', 'coffee'] as const).map(name => [name, new AnimationClip(name, name === 'walk' ? 0.8 : 3.2, [])])) as CharacterModel['clips'] }
+      : createHumanCharacter(modelIdx, this.clothesColorOf(type, isMain), { cap: look?.cap, glasses: look?.glasses })
+    const model = def.root
     model.scale.setScalar(CHAR_SCALE)
-    const clothes = this.clothesTexture(modelIdx, this.clothesColorOf(type, isMain))
     model.traverse((o) => {
       const mesh = o as Mesh
       if (mesh.isMesh) {
-        // 몸통만 옷 색을 바꾼다. 재질은 원본을 복제해서 바꾼다(공유 재질을 바꾸면 다른 캐릭터도 같이 변한다)
-        const m = (mesh.material as MeshStandardMaterial).clone()
-        if (mesh.name === 'body-mesh') m.map = clothes
+        const m = mesh.material as MeshStandardMaterial
         m.clippingPlanes = [FLOOR_CLIP]
         m.clipShadows = true
         mesh.material = m
@@ -2444,6 +2448,7 @@ export class OfficeScene {
     })
     const holder = new Group()
     holder.add(model)
+    if (spritePerson) holder.add(spritePerson.sprite)
     this.scene.add(holder)
 
     // 팀 색 발밑 링
@@ -2492,6 +2497,8 @@ export class OfficeScene {
       holder,
       ring,
       mixer: new AnimationMixer(model),
+      spritePerson,
+      spriteTime: Math.random(),
       clips: def.clips,
       label,
       tagEl,
@@ -2501,53 +2508,6 @@ export class OfficeScene {
       dotsEl,
       nameTextEl: agentEl,
     }
-  }
-
-  /**
-   * 색상표에서 그 모델의 옷 색 칸(견본 한 쌍 64x128)을 목표 색으로 다시 칠한 텍스처.
-   * 견본 안의 밝기 차(그라데이션)는 남겨 입체감을 유지한다.
-   */
-  private clothesTexture(modelIdx: number, hex: string) {
-    const k = `${modelIdx}:${hex}`
-    const hit = this.clothesTextures.get(k)
-    if (hit) return hit
-    const def = this.assets!.characters[modelIdx]
-    const img = def.colormap
-    const cv = document.createElement('canvas')
-    cv.width = img.width
-    cv.height = img.height
-    const g = cv.getContext('2d', { willReadFrequently: true })!
-    g.drawImage(img, 0, 0)
-    const cw = img.width / 16
-    const ch = img.height / 4
-    const x = Math.floor(def.clothesCell.col / 2) * 2 * cw
-    const y = def.clothesCell.row * ch
-    const data = g.getImageData(x, y, cw * 2, ch)
-    const px = data.data
-    const target = new Color(hex)
-    const tl = { h: 0, s: 0, l: 0 }
-    target.getHSL(tl)
-    let mean = 0
-    for (let i = 0; i < px.length; i += 4)
-      mean += (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255
-    mean /= px.length / 4
-    const c = new Color()
-    for (let i = 0; i < px.length; i += 4) {
-      const l0 = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255
-      const l = Math.min(0.9, Math.max(0.08, tl.l + (l0 - mean) * 0.9))
-      // 캔버스 픽셀은 sRGB 값이므로 sRGB 로 되돌려 쓴다
-      c.setHSL(tl.h, tl.s, l, SRGBColorSpace)
-      px[i] = Math.round(c.r * 255)
-      px[i + 1] = Math.round(c.g * 255)
-      px[i + 2] = Math.round(c.b * 255)
-    }
-    g.putImageData(data, x, y)
-    const tex = new CanvasTexture(cv)
-    tex.flipY = false
-    tex.colorSpace = SRGBColorSpace
-    tex.anisotropy = 4
-    this.clothesTextures.set(k, tex)
-    return tex
   }
 
   private upsert(
@@ -2561,10 +2521,10 @@ export class OfficeScene {
   ) {
     let ch = this.chars.get(k)
     if (!ch) {
-      const seat = this.seatFor(zone, type, isMain)
+      const seat = this.seatFor(zone, type, isMain, title)
       const typeKey = isMain ? 'main' : type
       const variant = [...this.chars.values()].filter((c) => c.typeKey === typeKey).length
-      const spots = LAYOUT.spots[zone]
+      const spots = LAYOUT.spots[roleZone(type, title, isMain)]
       ch = {
         key: k,
         session,
@@ -2611,7 +2571,12 @@ export class OfficeScene {
       this.route(ch, seat ? 'seat' : 'spot')
       this.play(ch, 'walk')
     }
-    // meta.json 이 늦어 agentType 을 모른 채 들어온 서브는 이름을 알게 되면 이름표를 고친다(모델·자리는 그대로)
+    // Move once when late metadata resolves an unknown role; tool changes do not move workers.
+    if (!isMain && roleZone(ch.typeKey, ch.title) === 5 && roleZone(type, title) !== 5) {
+      ch.seat = this.seatFor(zone, type, false, title, k)
+      ch.spot = ch.seat ? null : LAYOUT.spots[roleZone(type, title)][0]
+      if (!ch.leaving) this.route(ch, ch.seat ? 'seat' : 'spot')
+    }
     if (!isMain && type !== ch.typeKey) {
       ch.typeKey = type
       ch.nameTextEl.textContent = agentNameOf(type, false)
@@ -2634,14 +2599,7 @@ export class OfficeScene {
   /** 화면 언어가 바뀌면(i18n setLocale 뒤) 이름표·구역 표식을 새 언어로 다시 쓴다. 말풍선 칩은 매 프레임 따라간다 */
   refreshLocale() {
     for (const ch of this.chars.values()) ch.nameTextEl.textContent = agentNameOf(ch.typeKey, ch.isMain)
-    this.tvDirty = true
     if (this.assets) this.sync(this.lastSessions)
-  }
-
-  /** 서버 스냅샷의 사용량. TV 화면에 그린다 */
-  setUsage(usage: UsageInfo | null) {
-    this.usage = usage
-    this.tvDirty = true
   }
 
   /** 구역 표식에 프로젝트 이름을 보일지(HUD 스위치) */
@@ -2703,7 +2661,7 @@ export class OfficeScene {
       return {
         x: ch.seat.x,
         z: ch.seat.z,
-        yaw: SEAT_YAW,
+        yaw: ch.seat.yaw,
         via: { x: ch.seat.cx, z: ch.seat.cz },
       }
     }
@@ -2765,7 +2723,7 @@ export class OfficeScene {
     } else if (ch.goal === 'seat') {
       ch.mode = 'sit'
       ch.sitAt = ch.seat ? deskSit(ch.seat) : null
-      ch.targetYaw = SEAT_YAW
+      ch.targetYaw = ch.seat?.yaw ?? SEAT_YAW
       ch.idleTimer = rand(4, 9)
     } else if (ch.goal === 'lounge' && ch.rest?.kind === 'sit') {
       ch.mode = 'sit'
@@ -2877,9 +2835,14 @@ export class OfficeScene {
       else this.stepStand(ch, dt)
       this.applyPose(ch, dt)
     }
+    let seatsFreed = false
     for (const ch of [...this.chars.values()]) {
-      if (ch.removed) this.disposeChar(ch)
+      if (ch.removed) {
+        seatsFreed ||= ch.seat !== null
+        this.disposeChar(ch)
+      }
     }
+    if (seatsFreed) this.reassignWaitingSeats()
     // 세션이 끝났거나 비켜 주는 중이고 캐릭터가 모두 나간 구역은 비운다. 비면 기다리는 세션을 바로 들인다
     let freed = false
     for (let z = 0; z < ZONE_COUNT; z++) {
@@ -2893,8 +2856,16 @@ export class OfficeScene {
         this.evicting.delete(id)
         freed = true
       }
-      const used = this.zones[z] !== null
-      this.zoneLabels[z].el.style.display = used ? '' : 'none'
+      const used = [...this.chars.values()].some(c => !c.removed && (c.seat?.zone ?? roleZone(c.typeKey, c.title, c.isMain)) === z)
+      const projects = this.showProject ? [...new Set([...this.chars.values()]
+        .filter(c => !c.removed && c.seat?.zone === z)
+        .map(c => this.lastSessions.find(s => s.id === c.session)?.project).filter(Boolean))] : []
+      const label = [roleLabel(z, getLocale()), ...projects.slice(0, 1), ...(projects.length > 1 ? [`+${projects.length - 1}`] : [])].join(' · ')
+      const el = this.zoneLabels[z].el
+      if (el.textContent !== label) el.textContent = label
+      const title = projects.join(' · ')
+      if (el.title !== title) el.title = title
+      this.zoneLabels[z].el.style.display = ''
       const mat = this.zoneMats[z]
       mat.color.set(TEAM_FLOORS[z])
       mat.opacity = used ? 0.9 : 0.65
@@ -2905,13 +2876,17 @@ export class OfficeScene {
 
   private disposeChar(ch: Char) {
     ch.mixer.stopAllAction()
+    ch.spritePerson?.dispose()
     this.holdCup(ch, false)
     this.scene.remove(ch.holder, ch.ring)
     ch.labelEl.remove()
-    // 바닥 클리핑을 위해 복제한 캐릭터 재질을 해제한다. 지오메트리와 색상표 텍스처는 공유한다.
+    // 사람형 모델의 전용 지오메트리와 재질을 해제한다.
     ch.holder.traverse((o) => {
       const mesh = o as Mesh
-      if (mesh.isMesh) (mesh.material as Material).dispose()
+      if (mesh.isMesh) {
+        mesh.geometry.dispose()
+        ;(mesh.material as Material).dispose()
+      }
       ;(o as SkinnedMesh).skeleton?.dispose()
     })
     this.chars.delete(ch.key)
@@ -3037,6 +3012,7 @@ export class OfficeScene {
     if (ch.mode === 'walk') return 'walk'
     if (ch.mode === 'stand') return this.isDrinking(ch) ? 'coffee' : 'idle'
     if (ch.sitAt?.sofa) return 'sit'
+    if (ch.act === 'type' && (ch.seat?.zone === 0 || classifyRole(ch.typeKey, ch.title) === 'review')) return 'read'
     if (ch.act === 'type') return 'work'
     if (ch.act === 'read') return 'read'
     if (ch.act === 'wait') return 'wait'
@@ -3051,11 +3027,11 @@ export class OfficeScene {
       ch.cup = null
       return
     }
-    const hand = ch.holder.getObjectByName('arm-right')
+    const hand = ch.holder.getObjectByName('hand-right')
     if (!hand) return
     const cup = new Mesh(this.cupGeo, this.cupMat)
     cup.castShadow = true
-    cup.position.set(CUP_HAND.x, CUP_HAND.y, CUP_HAND.z)
+    cup.position.set(0, -0.015, 0.025)
     hand.add(cup)
     ch.cup = cup
   }
@@ -3073,12 +3049,16 @@ export class OfficeScene {
     const targetY = riding ? this.elevator!.motion.height + 0.065 : sitting ? lift : 0
     ch.holder.position.set(ch.x, riding ? targetY : y + (targetY - y) * Math.min(1, dt * 10), ch.z)
     ch.holder.rotation.y = ch.yaw
+    if (ch.spritePerson) {
+      ch.spriteTime += dt
+      ch.spritePerson.update(ch.yaw, this.clipFor(ch), ch.spriteTime, ch.sitAt?.seatTop ?? null, ch.holder.position.y)
+    }
     ch.ring.position.set(ch.x, 0.012, ch.z)
 
     // 이름표·말풍선: 머리 위. holder 의 자식이라 holder 높이(보간 중 포함)를 빼서 월드 높이를 고정한다
     const worldHead = sitting
-      ? lift + CHAR_SCALE * (MODEL_HEAD_TOP - SIT_ROOT_DROP) + 0.06
-      : CHAR_HEIGHT + 0.06
+      ? lift + CHAR_SCALE * (MODEL_HEAD_TOP - SIT_ROOT_DROP) + 0.28
+      : CHAR_HEIGHT + 0.28
     const head = worldHead - ch.holder.position.y
     ch.label.position.set(0, head, 0)
     const insideLift = ch.x < ELEVATOR.frontX && ch.x > ELEVATOR.x - 0.7 && Math.abs(ch.z - ELEVATOR.z) < 0.7

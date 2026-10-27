@@ -51,6 +51,12 @@ const ko = {
       : sec < 3600
         ? `${Math.floor(sec / 60)}분 ${sec % 60}초 전`
         : `${Math.floor(sec / 3600)}시간 ${Math.floor((sec % 3600) / 60)}분 전`,
+  providerFilter: '서비스 선택',
+  allProviders: '전체',
+  noProviderSessions: '선택한 서비스의 활성 세션이 없습니다.',
+  usageUnavailable: '사용량 기록 없음',
+  usageRecorded: '기록 시각',
+  usageWindow: (min: number) => min % 1440 === 0 ? `${min / 1440}일` : min % 60 === 0 ? `${min / 60}시간` : `${min}분`,
   usageTitle: '사용량',
   usageSession: '현재 세션',
   usageWeekly: '주간',
@@ -99,6 +105,12 @@ const en: Messages = {
       : sec < 3600
         ? `${Math.floor(sec / 60)}m ${sec % 60}s ago`
         : `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m ago`,
+  providerFilter: 'Select service',
+  allProviders: 'All',
+  noProviderSessions: 'No active sessions for this service.',
+  usageUnavailable: 'No usage record',
+  usageRecorded: 'Recorded',
+  usageWindow: (min) => min % 1440 === 0 ? `${min / 1440}d` : min % 60 === 0 ? `${min / 60}h` : `${min}m`,
   usageTitle: 'Usage',
   usageSession: 'Session',
   usageWeekly: 'Weekly',
@@ -146,6 +158,12 @@ const ja: Messages = {
       : sec < 3600
         ? `${Math.floor(sec / 60)}分${sec % 60}秒前`
         : `${Math.floor(sec / 3600)}時間${Math.floor((sec % 3600) / 60)}分前`,
+  providerFilter: 'サービス選択',
+  allProviders: 'すべて',
+  noProviderSessions: '選択したサービスのアクティブなセッションはありません。',
+  usageUnavailable: '使用量記録なし',
+  usageRecorded: '記録時刻',
+  usageWindow: (min) => min % 1440 === 0 ? `${min / 1440}日` : min % 60 === 0 ? `${min / 60}時間` : `${min}分`,
   usageTitle: '使用量',
   usageSession: '現在のセッション',
   usageWeekly: '週間',
@@ -193,6 +211,12 @@ const zh: Messages = {
       : sec < 3600
         ? `${Math.floor(sec / 60)}分${sec % 60}秒前`
         : `${Math.floor(sec / 3600)}小时${Math.floor((sec % 3600) / 60)}分前`,
+  providerFilter: '选择服务',
+  allProviders: '全部',
+  noProviderSessions: '所选服务没有活动会话。',
+  usageUnavailable: '暂无用量记录',
+  usageRecorded: '记录时间',
+  usageWindow: (min) => min % 1440 === 0 ? `${min / 1440}天` : min % 60 === 0 ? `${min / 60}小时` : `${min}分钟`,
   usageTitle: '用量',
   usageSession: '当前会话',
   usageWeekly: '每周',

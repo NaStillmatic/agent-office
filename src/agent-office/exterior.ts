@@ -35,10 +35,11 @@ export function panoramaBounds(camera: Camera, viewportAspect: number, imageAspe
     }
   }
   const width = right - left, height = top - bottom
-  // Fit the complete river-and-bridges composition without targeting a landmark.
+  // Use the available vertical crop to bring more of the river into the center windows.
   const fittedWidth = Math.max(width, height * imageAspect / viewportAspect)
   const fittedHeight = fittedWidth * viewportAspect / imageAspect
-  return new Vector4((left + right - fittedWidth) / 2, (bottom + top - fittedHeight) / 2, fittedWidth, fittedHeight)
+  const riverShift = Math.min(fittedHeight * 0.14, (fittedHeight - height) / 2)
+  return new Vector4((left + right - fittedWidth) / 2, (bottom + top - fittedHeight) / 2 + riverShift, fittedWidth, fittedHeight)
 }
 
 export function createSeoulBackdrop(renderer: WebGLRenderer) {

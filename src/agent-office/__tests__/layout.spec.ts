@@ -20,11 +20,11 @@ import {
 const door = { x: DOOR.x, z: DOOR.z }
 
 describe('사무실 배치', () => {
-  it('서로 다른 색의 6개 구역과 36자리가 사무실 안에 들어간다', () => {
+  it('서로 다른 색의 6개 세션과 30자리가 사무실 안에 들어간다', () => {
     expect(ZONE_COUNT).toBe(6)
     expect(ZONE_ORIGIN).toHaveLength(6)
     expect(new Set(TEAM_COLORS).size).toBe(6)
-    expect(LAYOUT.seats).toHaveLength(36)
+    expect(LAYOUT.seats).toHaveLength(30)
     for (const seat of LAYOUT.seats) {
       expect(seat.cx).toBeGreaterThan(0)
       expect(seat.cx).toBeLessThan(W)
@@ -33,12 +33,12 @@ describe('사무실 배치', () => {
     }
   })
 
-  it('팀 구역마다 자리 6개, 팀장 자리는 구역당 하나', () => {
-    expect(LAYOUT.seats).toHaveLength(ZONE_COUNT * 6)
+  it('활성 업무 구역은 각각 6자리', () => {
+    expect(LAYOUT.seats).toHaveLength(30)
     for (let z = 0; z < ZONE_COUNT; z++) {
       const mine = LAYOUT.seats.filter((s) => s.zone === z)
-      expect(mine).toHaveLength(6)
-      expect(mine.filter((s) => s.lead)).toHaveLength(1)
+      expect(mine).toHaveLength(z === 3 ? 0 : 6)
+      expect(mine.filter((s) => s.lead)).toHaveLength(z === 3 ? 0 : 1)
     }
   })
 
@@ -47,13 +47,17 @@ describe('사무실 배치', () => {
     const DESK_W = 0.73 // FOOT.desk 폭(스케일 1)
     for (const seat of LAYOUT.seats) {
       const screens = LAYOUT.items.filter((i) => i.screenOf === seat.id)
+      if (seat.zone === 0) {
+        expect(screens).toHaveLength(0)
+        continue
+      }
       expect(screens).toHaveLength(2)
       const [left, right] = [...screens].sort((a, b) => a.x - b.x)
-      expect([left.screenKind, right.screenKind]).toEqual(['design', 'terminal'])
+      expect([left.screenKind, right.screenKind]).toEqual(seat.zone === 2 || seat.zone === 3 ? ['design', 'design'] : seat.zone === 4 ? ['design', 'terminal'] : ['terminal', 'terminal'])
       // 의자 바로 뒤(-z)의 책상. 같은 열의 다른 줄·구역 책상과 헷갈리지 않게 가장 가까운 것을 고른다
       const desk = LAYOUT.items
-        .filter((i) => i.model === 'desk' && Math.abs(i.x - seat.cx) < 0.01 && i.z < seat.cz)
-        .sort((p, q) => q.z - p.z)[0]
+        .filter((i) => i.model === 'desk' && i.zone === seat.zone && Math.abs(i.x - seat.cx) < 0.01)
+        .sort((p, q) => Math.abs(p.z - seat.cz) - Math.abs(q.z - seat.cz))[0]
       expect((left.x + right.x) / 2).toBeCloseTo(desk.x - 0.10 * (desk.s ?? 1))
       const deskHalf = (DESK_W * (desk.sx ?? desk.s ?? 1)) / 2
       const spans = screens.map((i) => {
@@ -79,7 +83,21 @@ describe('사무실 배치', () => {
           Math.abs(i.x - desk.x) < deskHalf &&
           Math.abs(i.z - desk.z) < 0.4,
       )
-      for (const d of decor) expect(d.z).toBeGreaterThan(Math.max(...screens.map((i) => i.z)) + 0.1)
+      for (const d of decor) expect((d.z - screens[0].z) * -Math.cos(seat.yaw)).toBeGreaterThan(0.1)
+    }
+  })
+
+  it('places one compact computer per desktop and none at the meeting table', () => {
+    const desks = LAYOUT.seats.filter(seat => seat.zone !== 0)
+    expect(LAYOUT.miniComputers).toHaveLength(desks.length)
+    expect(new Set(LAYOUT.miniComputers.map(pc => pc.seatId)).size).toBe(desks.length)
+    for (const seat of desks) {
+      const pc = LAYOUT.miniComputers.find(item => item.seatId === seat.id)!
+      expect(pc).toBeDefined()
+      const desk = LAYOUT.items.filter(item => item.model === 'desk' && item.zone === seat.zone && Math.abs(item.x - seat.cx) < 0.01)
+        .sort((a, b) => Math.abs(a.z - seat.cz) - Math.abs(b.z - seat.cz))[0]
+      expect(Math.abs(pc.x - desk.x) + 0.09 * pc.scale).toBeLessThan(0.73 * (desk.sx ?? 1) / 2)
+      expect(pc.y).toBeCloseTo(0.38 * (desk.s ?? 1))
     }
   })
 
@@ -133,12 +151,13 @@ describe('사무실 배치', () => {
     }
   })
 
-  it('책상은 구역마다 2줄로 나란히 놓이고 모두 같은 방향이다', () => {
+  it('업무 책상은 두 줄이 서로 마주 보고 회의실에는 개인 책상이 없다', () => {
     for (let z = 0; z < ZONE_COUNT; z++) {
       const desks = LAYOUT.items.filter((i) => i.model === 'desk' && i.zone === z)
+      if (z === 0 || z === 3) { expect(desks).toHaveLength(0); continue }
       expect(desks).toHaveLength(6)
       expect(new Set(desks.map((d) => d.z.toFixed(2))).size).toBe(2)
-      expect(new Set(desks.map((d) => d.rot ?? 0)).size).toBe(1)
+      expect(new Set(desks.map((d) => d.rot ?? 0)).size).toBe(2)
     }
   })
 })
@@ -240,8 +259,7 @@ describe('창 앞 배치', () => {
     expect(LAYOUT.items.filter((item) => item.model === 'books').every((item) => item.y! >= 0.3)).toBe(true)
   })
 
-  it('TV는 유리에서 떨어져 있고 뒤쪽 두 면만 유리다', () => {
-    expect(LAYOUT.tv.z).toBeGreaterThan(0.4)
+  it('뒤쪽 두 면만 유리다', () => {
     expect(LAYOUT.items.some((item) => item.wall === 'W')).toBe(false)
     expect(new Set(LAYOUT.windows.map((window) => window.wall))).toEqual(new Set(['N', 'W']))
     expect(LAYOUT.items.some((item) => ['wall', 'wallDoorway', 'wallWindow', 'kitchenCabinetUpper'].includes(item.model))).toBe(false)

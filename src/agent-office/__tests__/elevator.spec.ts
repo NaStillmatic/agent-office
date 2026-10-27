@@ -39,7 +39,9 @@ describe('엘리베이터 출입', () => {
     expect(lift.height).toBe(0)
   })
 
-  it('객실에서 로비를 거쳐 모든 자리까지 오갈 수 있고 객실 뒤·옆은 막혀 있다', () => {
+  it('화면 위쪽 중앙의 엘리베이터에서 객실·로비를 거쳐 모든 자리까지 오갈 수 있고 객실 뒤·옆은 막혀 있다', () => {
+    expect(ELEVATOR.x).toBeCloseTo(ELEVATOR.z)
+    expect(ELEVATOR.x).toBeLessThan(4)
     for (const seat of LAYOUT.seats) {
       const path = findPath(DOOR, { x: seat.cx, z: seat.cz }, LAYOUT.blocked)
       expect(path, seat.id).not.toBeNull()
