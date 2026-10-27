@@ -15,7 +15,7 @@ The main agent types at its desk, delegated subagents work at the desks next to 
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
+<img src="docs/screenshot.png?v=f7b0992" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
 
 <p><sub>Shown with synthetic test data: six sessions and six subagents. No real conversations or project information are included.</sub></p>
 

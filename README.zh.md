@@ -15,7 +15,7 @@
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office 测试画面：可眺望首尔的办公室内显示六个会话和六个子智能体" width="900">
+<img src="docs/screenshot.png?v=f7b0992" alt="Agent Office 测试画面：可眺望首尔的办公室内显示六个会话和六个子智能体" width="900">
 
 <p><sub>画面使用模拟测试数据，显示六个会话和六个子智能体，不包含真实对话或项目信息。</sub></p>
 

@@ -15,7 +15,7 @@
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office 테스트 화면: 서울 배경의 사무실에 세션 6개와 서브에이전트 6개가 표시되어 있다" width="900">
+<img src="docs/screenshot.png?v=f7b0992" alt="Agent Office 테스트 화면: 서울 배경의 사무실에 세션 6개와 서브에이전트 6개가 표시되어 있다" width="900">
 
 <p><sub>테스트 데이터로 구성한 화면입니다. 세션 6개와 서브에이전트 6개를 표시하며 실제 대화나 프로젝트 정보는 포함하지 않습니다.</sub></p>
 

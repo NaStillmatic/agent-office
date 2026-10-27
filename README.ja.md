@@ -15,7 +15,7 @@
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office のテスト画面: ソウルを望むオフィスに 6 セッションと 6 体のサブエージェントを表示" width="900">
+<img src="docs/screenshot.png?v=f7b0992" alt="Agent Office のテスト画面: ソウルを望むオフィスに 6 セッションと 6 体のサブエージェントを表示" width="900">
 
 <p><sub>テストデータで構成した画面です。6 セッションと 6 体のサブエージェントを表示し、実際の会話やプロジェクト情報は含みません。</sub></p>
 
