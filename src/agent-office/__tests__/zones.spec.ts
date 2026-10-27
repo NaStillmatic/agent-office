@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { planZones, type SessionInfo } from '../scene'
+import { ZONE_COUNT } from '../layout'
 
 /** busy: 메인이 일하는 세션, at: 마지막 활동 시각 */
 const ses = (id: string, busy: boolean, at: number): SessionInfo => ({
@@ -11,6 +12,15 @@ const ses = (id: string, busy: boolean, at: number): SessionInfo => ({
 const none = new Set<string>()
 
 describe('구역 배정(planZones)', () => {
+  it('6개 세션을 모두 보여 주고 7번째 작업 세션은 대기 구역을 비켜 세운다', () => {
+    const live = Array.from({ length: 6 }, (_, i) => ses(`s${i}`, i !== 0, i + 1))
+    const initial = planZones(new Array(ZONE_COUNT).fill(null), live, none)
+    expect(new Set(initial.zones)).toEqual(new Set(live.map((s) => s.id)))
+    expect(initial.evict).toEqual([])
+    const overflow = planZones(initial.zones, [...live, ses('seventh', true, 100)], none)
+    expect(overflow.evict).toEqual(['s0'])
+  })
+
   it('빈 구역은 일하는 세션 → 최근 활동순으로 채운다', () => {
     const live = [ses('a', false, 900), ses('b', true, 100), ses('c', true, 500)]
     expect(planZones([null, null], live, none)).toEqual({ zones: ['c', 'b'], evict: [] })

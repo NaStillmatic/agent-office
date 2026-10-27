@@ -21,34 +21,38 @@ export const CAFE = {
   counterX: BAR_CENTER_X - (BAR_OUTER_HALF_WIDTH + BAR_INNER_HALF_WIDTH) / 2,
   cupX: BAR_CENTER_X + (BAR_OUTER_HALF_WIDTH + BAR_INNER_HALF_WIDTH) / 2,
   counterDepth: BAR_OUTER_HALF_WIDTH - BAR_INNER_HALF_WIDTH,
-  z: 8.6,
-  startZ: 8,
+  z: 12.6,
+  startZ: 12,
   outerHalfWidth: BAR_OUTER_HALF_WIDTH,
   innerHalfWidth: BAR_INNER_HALF_WIDTH,
-  frontZ: 10.514,
+  frontZ: 14.514,
   tableX: 1.9,
-  tableZ: 7.05,
+  tableZ: 11.05,
   baristaX: BAR_CENTER_X,
 }
 export const G = 0.25
-export const W = 15
-export const D = 12
+export const W = 18
+export const D = 18
+/** 뒤쪽 두 창면을 부드럽게 연결하는 곡면 유리 반지름. */
+export const WINDOW_RADIUS = 3
 export const COLS = Math.round(W / G)
 export const ROWS = Math.round(D / G)
 /** 앞쪽 엘리베이터. 객실 안에서 태어나고 객실 안으로 돌아가 퇴장한다. */
-export const ELEVATOR = { x: 4.375, z: 10.625, frontX: 5.075, lobbyX: 5.625, w: 1.7, d: 1.4, h: 1.6 }
+export const ELEVATOR = { x: 4.375, z: 16.125, frontX: 5.075, lobbyX: 5.625, w: 1.7, d: 1.4, h: 1.6 }
 /** 길찾기에서 사용하는 출입 목적지(엘리베이터 객실 중심). */
 export const DOOR = { x: ELEVATOR.x, z: ELEVATOR.z }
 
-export const ZONE_COUNT = 4
+export const ZONE_COUNT = 6
 /** 세션(팀) 색: 이름표 점·테두리·발밑 링·구역 바닥. 옷 색(agentType)은 office.config.ts 의 AGENT_LOOKS 가 따로 정한다 */
-export const TEAM_COLORS = ['#22b8cf', '#f5d142', '#f06595', '#94d82d']
+export const TEAM_COLORS = ['#22b8cf', '#f5d142', '#f06595', '#94d82d', '#9775fa', '#ff922b']
 /** 구역 왼쪽 위(북서) 모서리 */
 export const ZONE_ORIGIN: { x: number; z: number }[] = [
-  { x: 4.0, z: 2.1 },
-  { x: 10.0, z: 2.1 },
-  { x: 4.0, z: 6.7 },
-  { x: 10.0, z: 6.7 },
+  { x: 5, z: 3 },
+  { x: 11, z: 3 },
+  { x: 5, z: 8 },
+  { x: 11, z: 8 },
+  { x: 5, z: 13 },
+  { x: 11, z: 13 },
 ]
 export const ZONE_SIZE = { w: 4.4, d: 2.55 }
 const COL_X = [0.65, 2.11, 3.57]
@@ -154,7 +158,7 @@ const LOUNGE_SCALE = 1.35
 const SOFA_SX = 2.0
 const CHAIR_SX = 2.6
 /** 소파 중심 z. 파노라마 창의 남쪽 끝에 휴게 공간을 두고, 앞쪽 책상 줄과 나란히 배치한다 */
-const SOFA_Z = 2.7
+const SOFA_Z = 5
 /** 소파를 유리에서 띄워 파노라마 창을 가리지 않게 한다 */
 const SOFA_CENTER_X = 0.7
 /** 소파는 창을 등지고 사무실 안쪽(+x)을 본다 */
@@ -257,7 +261,7 @@ export interface OfficeLayout {
 
 /**
  * 벽면에 붙이는 큰 창. 창문 모델(wallWindow)은 유리 폭이 0.38 이라 늘리면 창틀까지 두꺼워져서, 유리판과 얇은 창틀로 직접 만든다.
- * 유리는 투명하며 실제 3D 원경을 비춘다. z·y 는 가운데, w·h 는 창틀 바깥 크기다
+ * 유리 뒤에 공유 파노라마를 투영한다. z·y 는 가운데, w·h 는 창틀 바깥 크기다
  */
 export interface WallWindow {
   wall: 'N' | 'W'
@@ -436,6 +440,12 @@ function build(): OfficeLayout {
     else blockRect(it.x, it.z, w, d)
   }
 
+  // 곡면 유리 바깥 코너는 이동할 수 없다.
+  for (let c = 0; c < WINDOW_RADIUS / G; c++) {
+    for (let r = 0; r < WINDOW_RADIUS / G; r++) {
+      if (Math.hypot(cellCenter(c) - WINDOW_RADIUS, cellCenter(r) - WINDOW_RADIUS) > WINDOW_RADIUS - 0.15) blocked.add(key(c, r))
+    }
+  }
   // 뒤쪽 두 면은 통유리, 출입구는 앞쪽 엘리베이터다.
 
   // ── 팀 구역: 책상 6개씩 ──
@@ -511,7 +521,7 @@ function build(): OfficeLayout {
   for (const x of [CAFE.counterX, CAFE.cupX]) blockRect(x, CAFE.startZ + wingDepth / 2, CAFE.counterDepth, wingDepth)
   put({ model: 'trashcan', x: 0.2, z: CAFE.z - 0.5, s: 0.55 })
   // 두 바 사이 통로는 직원 전용이다.
-  blockRect(CAFE.baristaX, 9.1, BAR_AISLE_WIDTH - 0.15, 1.8)
+  blockRect(CAFE.baristaX, CAFE.z + 0.5, BAR_AISLE_WIDTH - 0.15, 1.8)
   const TEA_X = CAFE.tableX
   const teaSeats: SofaSeat[] = []
   for (const [i, z] of [CAFE.tableZ - 0.65, CAFE.tableZ + 0.65].entries()) {
@@ -588,13 +598,11 @@ function build(): OfficeLayout {
   put({ model: 'pillowBlue', x: 0.71, z: SOFA_Z + 0.85, y: 0.02, rot: Math.PI / 2 })
   put({ model: 'plantSmall3', x: 1.7, z: SOFA_Z, y: 0.27, s: 1.0 })
   // 소파와 입구 통로 사이에 스탠드 조명, 창 끝에는 화분을 둔다
-  put({ model: 'lampRoundFloor', x: 0.5, z: 4.4, s: 1.2 })
+  put({ model: 'lampRoundFloor', x: 0.5, z: 7, s: 1.2 })
   // Stand lamps at pod edges and beside the café leave the main aisles open.
   for (const { x, z } of [
-    { x: 3.35, z: 8.1 },
-    { x: 8.5, z: 1.45 },
-    { x: 8.5, z: 6.05 },
-    { x: 14.5, z: 6.05 },
+    { x: 3.35, z: CAFE.startZ + 0.1 },
+    ...ZONE_ORIGIN.map(o => ({ x: o.x + 4.5, z: o.z - 0.65 })),
   ]) {
     put({ model: 'lampRoundFloor', x, z, s: 1.2 })
   }
@@ -626,7 +634,7 @@ function build(): OfficeLayout {
     { x: 2.9, z: SOFA_Z, yaw: -Math.PI / 2 },
     { x: 2.5, z: SOFA_Z - 1.3, yaw: Math.PI / 2 },
     { x: 2.75, z: SOFA_Z + 1.2, yaw: -Math.PI / 2 },
-    { x: 1.2, z: 5.1, yaw: -Math.PI / 2 },
+    { x: 1.2, z: 8.1, yaw: -Math.PI / 2 },
   ]
   const pois: Poi[] = [
     // TV 앞(사용량 보기)
@@ -634,14 +642,14 @@ function build(): OfficeLayout {
     { x: 8.6, z: 0.95, yaw: Math.PI },
     { x: 10.1, z: 0.95, yaw: Math.PI },
     // 큰 창 앞(창밖 보기)
-    { x: 0.95, z: 5.2, yaw: -Math.PI / 2 },
+    { x: 0.95, z: 8.2, yaw: -Math.PI / 2 },
     ...coffeePois,
     // 커피 바 모서리 앞
     { x: 3.75, z: CAFE.z - 1.5, yaw: -Math.PI / 2 },
     ...loungePois,
     // 통로
-    { x: 8.1, z: 4.4, yaw: 0 },
-    { x: 3.4, z: 4.4, yaw: 0 },
+    { x: 10.1, z: 6.4, yaw: 0 },
+    { x: 4.1, z: 8.4, yaw: 0 },
     { x: W - 0.6, z: 4.4, yaw: -Math.PI / 2 },
   ]
 
@@ -662,14 +670,14 @@ function build(): OfficeLayout {
     trophies,
     teaSeats,
     espresso: { x: CAFE.counterX, y: COUNTER_TOP, z: CAFE.z, rot: Math.PI / 2, groups: 2 },
-    barista: { x: CAFE.baristaX, z: 9.05, yaw: 0 },
+    barista: { x: CAFE.baristaX, z: CAFE.z + 0.45, yaw: 0 },
     // 유리에서 떨어진 이동식 TV
     tv: { x: W - 1.4, y: 0.91, z: 0.68, w: 1.8, h: 1.08 },
     frames: [],
     // 출입은 엘리베이터로 통합하고 각 유리면을 같은 폭의 패널로 균등 분할한다.
     windows: [
-      { wall: 'W', z: D / 2, y: (1.29 * WALL_SY) / 2, w: D, h: 1.29 * WALL_SY, mullions: 3 },
-      { wall: 'N', x: W / 2, y: (1.29 * WALL_SY) / 2, w: W, h: 1.29 * WALL_SY, mullions: 4 },
+      { wall: 'W', z: (D + WINDOW_RADIUS) / 2, y: (1.29 * WALL_SY) / 2, w: D - WINDOW_RADIUS, h: 1.29 * WALL_SY, mullions: 4 },
+      { wall: 'N', x: (W + WINDOW_RADIUS) / 2, y: (1.29 * WALL_SY) / 2, w: W - WINDOW_RADIUS, h: 1.29 * WALL_SY, mullions: 4 },
     ],
   }
 }

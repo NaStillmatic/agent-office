@@ -15,9 +15,9 @@ The main agent types at its desk, delegated subagents work at the desks next to 
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png" alt="Agent Office test scene: four sessions and six subagents in an office overlooking Seoul" width="900">
+<img src="docs/screenshot.png" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
 
-<p><sub>Shown with synthetic test data: four sessions and six subagents. No real conversations or project information are included.</sub></p>
+<p><sub>Shown with synthetic test data: six sessions and six subagents. No real conversations or project information are included.</sub></p>
 
 </div>
 
@@ -29,7 +29,7 @@ When you run several Claude Code or Codex sessions, the terminal alone makes it 
 
 ## Features
 
-- **A zone per session** — Up to 4 sessions running at once, each in its own zone. When zones run out, sessions that are working come first.
+- **A zone per session** — Up to 6 sessions running at once in a 2-column, 3-row layout in an 18×18 square office, with 6 seats per zone (36 in total). When zones run out, sessions that are working come first.
 - **Characters that show their state** — They sit and type while working, switch to a reading pose while reading files, bounce a speech bubble while waiting for you, and idle subagents wander around the office.
 - **Tool chips in speech bubbles** — The tool in use (`Bash`, `Read`, `Edit` …) and the description of the delegated task. MCP tools are shortened for readability, e.g. `playwright · take screenshot`.
 - **Subagent tracking** — Follows background agents too, and the main bubble says who it is waiting for (`Waiting for code-reviewer ×2`).
@@ -81,7 +81,8 @@ Open <http://localhost:5180> in your browser, then use Claude Code or Codex as u
 | Walks out the door | The session or agent ended |
 
 - **Name tag dots, rings under the feet and floor colors** are the session (zone) color. **Clothes color** is the agent type color.
-- The two rear glass walls look onto a pixel-art panorama with illustrated depth: Namsan, N Seoul Tower, city buildings and the Han River. The panorama is visible only inside the window frames, with day/night transitions following your clock, subtle pixel glints on the river, and gently bobbing boats. Floor lamps stand beside the café and between work areas. From the evening, the room lights dim a little and the floor and table lamps turn on, casting a warm glow around them. Add `?hour=18.5` to the URL to see a specific time.
+- The two rear glass walls share an elevated view of the river, bridges and city buildings along both banks. A radius-3 curved glass corner joins the two window walls without a central upright. The broad composition balances river, bridges and city buildings without emphasizing a landmark. Recessed glazing, substantial frames and interior sills define the room edge. Compare straight windows with `?hour=18&window=square`. Day, sunset and night images blend with your clock; sunset also warms the indoor sunlight. Shared projection preserves the image proportions and a continuous horizon across both windows. The texture updates only when images load or the time changes. Floor lamps beside the café and between work areas glow warmly in the evening. Use `?hour=18` for sunset or `?hour=22` for night. [Sunset](docs/screenshot-sunset.png) · [Night](docs/screenshot-night.png)
+- Desks combine rounded oak tops, ivory drawer pedestals, dark metal frames and sage desk mats, keeping the existing seating clearance and desktop height.
 - Every desk has dual monitors. When someone sits down, the left one shows a design tool and the right one a terminal. Empty desks show a blue screen.
 - **Mouse wheel** zooms in and out. The top-right button toggles fullscreen.
 - **Click a character or name tag** to open the detail card. Click empty space or press `Esc` to close it.
@@ -132,7 +133,7 @@ The rules are pure functions in `server/analyze.ts`, tested by `server/analyze.s
 <details>
 <summary><b>When there are more sessions than zones</b></summary>
 
-The office has 4 zones. When more sessions are alive, the HUD shows a notice and zones are assigned in this order:
+The office has 6 zones. When more sessions are alive, the HUD shows a notice and zones are assigned in this order:
 
 1. Empty zones go to working sessions (main or a subagent is working) first, then by most recent activity.
 2. If all zones are taken and a working session is left out, the characters of the quietest non-working session walk out and hand over their zone.
@@ -208,7 +209,7 @@ Session logs contain the raw conversation and tool input/output, which may inclu
 ## Known limitations
 
 - **Session log formats can change.** Claude Code and Codex do not promise these local log formats as stable APIs, so updates may affect state detection. Unknown fields are ignored and broken lines are skipped.
-- There are 4 zones, so with 5 or more sessions open some of them are not shown.
+- There are 6 zones, so with 7 or more sessions open some of them are not shown.
 - When the process cannot be checked — for example, viewing Claude Code inside WSL from an Agent Office started on Windows — sessions are treated as open.
 - A force-killed subagent takes 12 minutes to show `Not responding` (headroom so that long builds are not misreported).
 - The camera looks down at seated characters from behind, so typing is not as clear as it would be from the front.
@@ -229,8 +230,9 @@ src/i18n.ts                         UI strings (Korean · English · Japanese ·
 scripts/check-deps.mjs              Checks before npm run dev that dependencies are installed for this machine
 src/agent-office/scene.ts           three.js scene — characters · movement · bubbles · zone assignment
 src/agent-office/layout.ts          Office layout (pure data) · pathfinding
+src/agent-office/staticMeshes.ts    Static desk and monitor instancing
 src/agent-office/tvScreen.ts        Wall TV screen (usage gauges, clock)
-src/agent-office/exterior.ts        Pixel-art landscape (day/night Seoul panoramas)
+src/agent-office/exterior.ts        Seoul riverside panorama (day/sunset/night, aspect-preserving window projection)
 src/agent-office/windowView.ts      Sky colors and night intensity
 src/agent-office/assets.ts          GLB loader · animation clip composition (typing etc.)
 src/agent-office/office.config.ts   Per-project settings
@@ -240,7 +242,7 @@ server/sessionFiles.ts              Session file index — 5-second discovery ·
 server/analyze.ts                   State rules as pure functions
 ```
 
-Tests cover the state rules, zone assignment, layout (paths are not blocked, monitors fit on desks), bubble texts, the language dictionaries (every language has the same keys) and character color contrast. For changes that affect the 3D view, please also check it visually with `npm run dev`.
+Tests cover movement across frame rates, static furniture instancing, the state rules, zone assignment, layout (paths are not blocked, monitors fit on desks), bubble texts, the language dictionaries (every language has the same keys) and character color contrast. For changes that affect the 3D view, please also check it visually with `npm run dev`.
 
 ## Contributing
 

@@ -4,6 +4,10 @@ import {
   LAYOUT,
   REST_AFTER_MS,
   ZONE_COUNT,
+  ZONE_ORIGIN,
+  TEAM_COLORS,
+  W,
+  D,
   WALL_SY,
   cellOf,
   findPath,
@@ -16,6 +20,19 @@ import {
 const door = { x: DOOR.x, z: DOOR.z }
 
 describe('사무실 배치', () => {
+  it('서로 다른 색의 6개 구역과 36자리가 사무실 안에 들어간다', () => {
+    expect(ZONE_COUNT).toBe(6)
+    expect(ZONE_ORIGIN).toHaveLength(6)
+    expect(new Set(TEAM_COLORS).size).toBe(6)
+    expect(LAYOUT.seats).toHaveLength(36)
+    for (const seat of LAYOUT.seats) {
+      expect(seat.cx).toBeGreaterThan(0)
+      expect(seat.cx).toBeLessThan(W)
+      expect(seat.cz).toBeGreaterThan(0)
+      expect(seat.cz).toBeLessThan(D)
+    }
+  })
+
   it('팀 구역마다 자리 6개, 팀장 자리는 구역당 하나', () => {
     expect(LAYOUT.seats).toHaveLength(ZONE_COUNT * 6)
     for (let z = 0; z < ZONE_COUNT; z++) {

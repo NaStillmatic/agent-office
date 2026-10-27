@@ -68,6 +68,7 @@ import {
   TEAM_COLORS,
   W,
   WALL_SY,
+  WINDOW_RADIUS,
   ZONE_COUNT,
   ZONE_ORIGIN,
   ZONE_SIZE,
@@ -88,8 +89,10 @@ import {
 import { AGENT_LOOKS, AGENT_NAMES, MAIN_STAYS_SEATED, SEAT_OF_TYPE, SEAT_OTHER } from './office.config'
 import { t } from '../i18n'
 import { nightness } from './windowView'
-import { createSeoulPixelBackdrop } from './exterior'
+import { createSeoulBackdrop, panoramaWeights } from './exterior'
 import { FloorElevator } from './elevator'
+import { curvedWindowGeometry, windowArc } from './windowGeometry'
+import { instanceStaticMeshes } from './staticMeshes'
 import { drawTvScreen, type UsageInfo } from './tvScreen'
 
 export interface Status {
@@ -146,7 +149,7 @@ const SOFA_COLOR = new Color('#c4cec9')
 /** 천 소파라 거의 무광 */
 const SOFA_ROUGHNESS = 0.85
 const SOFA_MODELS = ['loungeSofa', 'loungeChair']
-const TEAM_FLOORS = ['#c3d8d4', '#e1d3bc', '#dfc9cd', '#cedcc3']
+const TEAM_FLOORS = ['#c3d8d4', '#e1d3bc', '#dfc9cd', '#cedcc3', '#d4cde5', '#e5cfba']
 /** 램프 불빛 색과 한밤 세기 */
 const LAMP_GLOW = '#ffbf73'
 const LAMP_POWER = 2.2
@@ -812,8 +815,11 @@ export class OfficeScene {
   private typeColors = new Map<string, string>()
   /** 모니터 몸체 재질. 모든 모니터가 같은 색이라 하나를 나눠 쓴다 */
   private monitorBody: MeshStandardMaterial | null = null
-  /** 유리 밖의 입체감 있는 픽셀아트 파노라마 */
-  private exterior: ReturnType<typeof createSeoulPixelBackdrop> | null = null
+  private deskTemplate: Group | null = null
+  private displayTemplates = new Map<boolean, Group>()
+  private staticFurniture: Mesh[] = []
+  /** 창문 안에서 이어지는 서울 강변 파노라마 */
+  private exterior: ReturnType<typeof createSeoulBackdrop> | null = null
   private exteriorMinute = -1
   /** 방 조명(낮 밝기 기준). 밤이 될수록 줄여 램프 불빛이 드러나게 한다(updateDayNight) */
   private roomLights: { hemi: HemisphereLight; amb: AmbientLight; sun: DirectionalLight } | null = null
@@ -830,7 +836,6 @@ export class OfficeScene {
   private frameDisposables: { dispose(): void }[] = []
   private raf = 0
   private last = 0
-  private time = 0
   private width = 1
   private height = 1
   private userZoom = 1
@@ -962,7 +967,7 @@ export class OfficeScene {
     this.scene.add(slab)
 
     // Compact, softly rounded islands distinguish work pods and shared spaces.
-    this.floorPatch(3.35, 5.4, 0.45, '#dfccb0', 1.675, 8.6)
+    this.floorPatch(3.35, 5.4, 0.45, '#dfccb0', 1.675, CAFE.z)
     this.floorPatch(3.15, 3.65, 0.45, '#cbd9d2', 1.65, LAYOUT.rug.z)
     for (let z = 0; z < ZONE_COUNT; z++) {
       const o = ZONE_ORIGIN[z]
@@ -1011,8 +1016,14 @@ export class OfficeScene {
     this.placeElevator()
     this.placeTv()
     for (const f of LAYOUT.frames) this.placeFrame(f)
-    this.exterior = createSeoulPixelBackdrop(this.renderer.capabilities.getMaxAnisotropy())
-    for (const w of LAYOUT.windows) this.placeWindow(w)
+    this.exterior = createSeoulBackdrop(this.renderer)
+    const squareWindows = new URLSearchParams(location.search).get('window') === 'square'
+    for (const w of LAYOUT.windows) {
+      this.placeWindow(squareWindows ? { ...w, w: w.w + WINDOW_RADIUS, x: w.wall === 'N' ? W / 2 : w.x, z: w.wall === 'W' ? D / 2 : w.z, mullions: 5 } : w)
+    }
+    if (!squareWindows) this.placeCurvedWindow()
+    instanceStaticMeshes(this.scene, this.staticFurniture)
+    this.staticFurniture = []
     // 건물 외곽으로 화면을 맞춰 소품이나 캐릭터 자세가 화면 배율을 바꾸지 않게 한다.
     this.roomBox = new Box3(
       new Vector3(-0.08, -0.12, -0.08),
@@ -1236,7 +1247,7 @@ export class OfficeScene {
     counter(CAFE.cupX, CAFE.startZ + wingDepth / 2, CAFE.counterDepth, wingDepth)
     // Split the machine counter around a real opening instead of laying a basin on top.
     const sinkX = CAFE.counterX
-    const sinkZ = 10.1
+    const sinkZ = CAFE.frontZ - 0.414
     const sinkW = 0.68
     const sinkD = 0.32
     const openingW = sinkD
@@ -1371,7 +1382,7 @@ export class OfficeScene {
     grinder.add(hopper, fill, lid, chute, dosingCup)
     this.addGrinderSideLogo(grinder, 0.108, 0.28, 0.08)
     grinder.rotation.y = -Math.PI / 2
-    grinder.position.set(CAFE.cupX, LAYOUT.espresso.y, 8.14)
+    grinder.position.set(CAFE.cupX, LAYOUT.espresso.y, CAFE.z - 0.46)
     grinder.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
     this.scene.add(grinder)
     // Acaia-inspired scales sit flush in the stainless counter, one beneath each server.
@@ -1393,7 +1404,7 @@ export class OfficeScene {
     const displayTexture = new CanvasTexture(displayCanvas)
     displayTexture.colorSpace = SRGBColorSpace
     const displayMaterial = new MeshBasicMaterial({ map: displayTexture, toneMapped: false })
-    for (const z of [8.52, 8.86, 9.20]) {
+    for (const z of [CAFE.z - 0.08, CAFE.z + 0.26, CAFE.z + 0.60]) {
       const scale = new Group()
       // The casing is embedded below the worktop; only a thin steel seam and white face show.
       const bezel = new Mesh(new BoxGeometry(0.28, 0.018, 0.31), metal)
@@ -1454,7 +1465,7 @@ export class OfficeScene {
     kettle.add(kettleBase, kettleBody, kettleLid, knob, spout, handle, kettleDial, screen)
     kettle.rotation.y = Math.PI
     kettle.traverse((o) => { if ((o as Mesh).isMesh) (o as Mesh).castShadow = true })
-    for (const z of [9.7, 10.15]) {
+    for (const z of [CAFE.z + 1.1, CAFE.z + 1.55]) {
       const station = kettle.clone(true)
       station.position.set(CAFE.cupX, LAYOUT.espresso.y, z)
       this.scene.add(station)
@@ -1565,14 +1576,14 @@ export class OfficeScene {
   }
 
   /**
-   * 바닥부터 천장까지 이어지는 파노라마 창. 얇은 실버 알루미늄 프레임으로 빌딩 파사드처럼 만든다.
+   * 바닥부터 천장까지 이어지는 파노라마 창. 두께 있는 알루미늄 프레임과 안쪽 창턱으로 실내 경계를 만든다.
    * 이동 막힘에는 넣지 않는 벽 장식이다.
    */
   private placeWindow(w: WallWindow) {
-    const frameMat = new MeshBasicMaterial({ color: '#bfcbd2', toneMapped: false })
+    const frameMat = new MeshStandardMaterial({ color: '#6f8087', metalness: 0.35, roughness: 0.48 })
     const glassMat = new MeshStandardMaterial({ color: '#b8dce7', transparent: true, opacity: 0.055, roughness: 0.12, metalness: 0.2, side: DoubleSide, depthWrite: false })
-    const bar = 0.012
-    const depth = 0.065
+    const bar = 0.032
+    const depth = 0.14
     const glassGeo = new PlaneGeometry(w.w - bar * 2, w.h - bar * 2)
     const verticalGeo = new BoxGeometry(bar * 0.72, w.h, depth)
     const horizontalGeo = new BoxGeometry(w.w, bar, depth)
@@ -1580,7 +1591,7 @@ export class OfficeScene {
     const g = new Group()
     if (this.exterior) {
       const view = new Mesh(glassGeo, this.exterior.material)
-      view.position.z = -0.003
+      view.position.z = -0.055
       g.add(view)
     }
     const glass = new Mesh(glassGeo, glassMat)
@@ -1602,10 +1613,10 @@ export class OfficeScene {
       g.add(post)
     }
     if (!w.door) {
-      const sillGeo = new BoxGeometry(w.w, 0.065, 0.16)
+      const sillGeo = new BoxGeometry(w.w, 0.085, 0.24)
       const sillMat = new MeshStandardMaterial({ color: '#d3d9d9', roughness: 0.65 })
       const sill = new Mesh(sillGeo, sillMat)
-      sill.position.set(0, -w.h / 2 + 0.0325, 0.045)
+      sill.position.set(0, -w.h / 2 + 0.0425, 0.065)
       sill.receiveShadow = true
       g.add(sill)
       this.frameDisposables.push(sillGeo, sillMat)
@@ -1624,6 +1635,28 @@ export class OfficeScene {
       g.position.set(w.x ?? W / 2, w.y, 0)
     }
     this.scene.add(g)
+  }
+
+  /** Continuous curved glass removes the upright where the river view joins. */
+  private placeCurvedWindow() {
+    if (!this.exterior) return
+    const height = 1.29 * WALL_SY
+    const geometry = curvedWindowGeometry(WINDOW_RADIUS, height)
+    const view = new Mesh(geometry, this.exterior.material)
+    this.scene.add(view)
+    const glassMat = new MeshStandardMaterial({ color: '#b8dce7', transparent: true, opacity: 0.045, roughness: 0.12, metalness: 0.2, side: DoubleSide, depthWrite: false })
+    const glass = new Mesh(geometry, glassMat)
+    glass.position.set(0.005, 0, 0.005)
+    this.scene.add(glass)
+    const frameMat = new MeshStandardMaterial({ color: '#6f8087', metalness: 0.35, roughness: 0.48 })
+    const sillMat = new MeshStandardMaterial({ color: '#d3d9d9', roughness: 0.65 })
+    this.frameDisposables.push(geometry, glassMat, frameMat, sillMat)
+    for (const y of [0.035, height]) {
+      const path = new CatmullRomCurve3(windowArc(WINDOW_RADIUS).map(p => p.setY(y)))
+      const railGeo = new TubeGeometry(path, 64, y === height ? 0.024 : 0.08, 8, false)
+      this.scene.add(new Mesh(railGeo, y === height ? frameMat : sillMat))
+      this.frameDisposables.push(railGeo)
+    }
   }
 
   /**
@@ -1705,7 +1738,7 @@ export class OfficeScene {
   }
 
   /**
-   * 픽셀아트 파노라마의 낮·밤을 현재 시각에 맞춘다(분이 바뀔 때만). 주소에 `?hour=18.5` 처럼 시각을 주면 그 시각으로 고정한다(확인용)
+   * 서울 강변의 낮·노을·밤을 현재 시각에 맞춘다(분이 바뀔 때만). 주소에 `?hour=18.5` 처럼 시각을 주면 그 시각으로 고정한다(확인용)
    */
   private updateExterior() {
     const now = new Date()
@@ -1726,10 +1759,14 @@ export class OfficeScene {
       r.hemi.intensity = 1.35 * (1 - 0.25 * night)
       r.amb.intensity = 0.55 * (1 - 0.15 * night)
       r.sun.intensity = 2.1 * (1 - 0.7 * night)
+      const sunset = panoramaWeights(hour)[1]
+      r.sun.color.set('#fff6e8').lerp(new Color('#ffc18c'), sunset)
     }
     for (const l of this.lamps) {
       l.shade.emissiveIntensity = 1.4 * night
       l.light.intensity = LAMP_POWER * night
+      // Exclude switched-off lamps from the daytime lighting shader.
+      l.light.visible = night > 0
     }
   }
 
@@ -1788,25 +1825,44 @@ export class OfficeScene {
     this.scene.add(group)
   }
 
-  /** Light oak top with open aluminum T legs; the original footprint and height stay fixed. */
+  /** Rounded oak workstation; keep the seating footprint and 0.38 top height. */
   private modernDesk() {
     const group = new Group()
-    const top = new MeshStandardMaterial({ color: '#d8bc91', roughness: 0.65 })
-    const metal = new MeshStandardMaterial({ color: '#b5c0c8', metalness: 0.65, roughness: 0.32 })
-    const tray = new MeshStandardMaterial({ color: '#677780', roughness: 0.7 })
+    const oak = new MeshStandardMaterial({ color: '#c6a478', roughness: 0.72 })
+    const ivory = new MeshStandardMaterial({ color: '#e7e4da', roughness: 0.7 })
+    const metal = new MeshStandardMaterial({ color: '#465254', metalness: 0.35, roughness: 0.5 })
+    const felt = new MeshStandardMaterial({ color: '#708681', roughness: 1 })
+    const recess = new MeshStandardMaterial({ color: '#89918b', roughness: 0.9 })
+    const boxGeometry = new BoxGeometry(1, 1, 1)
     const box = (w: number, h: number, d: number, mat: Material, x: number, y: number, z: number) => {
-      const mesh = new Mesh(new BoxGeometry(w, h, d), mat)
+      const mesh = new Mesh(boxGeometry, mat)
+      mesh.scale.set(w, h, d)
       mesh.position.set(x, y, z)
       group.add(mesh)
     }
-    box(0.73, 0.028, 0.56, top, 0, 0.366, 0)
-    for (const x of [-0.29, 0.29]) {
-      box(0.026, 0.326, 0.034, metal, x, 0.187, -0.015)
-      box(0.045, 0.024, 0.46, metal, x, 0.012, 0)
-      box(0.035, 0.02, 0.45, metal, x, 0.342, 0)
+    const rounded = (w: number, h: number, d: number, radius: number, mat: Material, x: number, y: number, z: number) => {
+      const mesh = new Mesh(new RoundedBoxGeometry(w, h, d, 2, radius), mat)
+      mesh.position.set(x, y, z)
+      group.add(mesh)
     }
-    box(0.56, 0.026, 0.025, metal, 0, 0.292, -0.13)
-    box(0.4, 0.035, 0.09, tray, 0, 0.32, -0.18)
+    rounded(0.73, 0.035, 0.56, 0.012, oak, 0, 0.3625, 0)
+    box(0.68, 0.014, 0.51, ivory, 0, 0.338, 0)
+    // Inset storage pedestal leaves the central knee space open.
+    rounded(0.145, 0.302, 0.43, 0.008, ivory, -0.265, 0.184, -0.015)
+    box(0.124, 0.032, 0.38, metal, -0.265, 0.021, -0.015)
+    for (const y of [0.145, 0.245]) {
+      box(0.126, 0.004, 0.003, recess, -0.265, y, 0.202)
+      box(0.058, 0.006, 0.009, metal, -0.265, y + 0.064, 0.207)
+    }
+    // Open rectangular metal frame on the opposite side.
+    for (const z of [-0.21, 0.21]) box(0.025, 0.32, 0.025, metal, 0.296, 0.17, z)
+    box(0.027, 0.018, 0.445, metal, 0.296, 0.015, 0)
+    box(0.49, 0.024, 0.022, metal, 0.04, 0.306, -0.19)
+    box(0.36, 0.026, 0.065, metal, 0.04, 0.315, -0.19)
+    rounded(0.39, 0.002, 0.21, 0.0008, felt, 0.035, 0.381, 0.105)
+    // Flush cable outlet behind the monitors, with a dark inset.
+    box(0.09, 0.002, 0.027, metal, 0, 0.381, -0.23)
+    box(0.069, 0.001, 0.009, recess, 0, 0.3825, -0.23)
     return group
   }
 
@@ -1864,9 +1920,9 @@ export class OfficeScene {
     const m = this.assets!.furniture.get(it.model)
     if (!m) return
     const s = it.s ?? 1
-    const obj = it.model === 'desk' ? this.modernDesk()
+    const obj = it.model === 'desk' ? (this.deskTemplate ??= this.modernDesk()).clone(true)
       : it.model === 'tableRound' ? this.cafeRoundTable()
-      : it.model === 'computerScreen' ? this.studioDisplay(it.screenKind === 'terminal')
+      : it.model === 'computerScreen' ? this.displayTemplate(it.screenKind === 'terminal').clone(true)
       : m.root.clone(true)
     obj.scale.set(it.sx ?? s, it.sy ?? s, it.sz ?? s)
     const depth = m.size.z * (it.sz ?? s)
@@ -1908,7 +1964,21 @@ export class OfficeScene {
     if (it.model === 'coatRackStanding') this.hangClothes(obj)
     if (it.model === 'rugDoormat') this.dressDoormat(obj)
     if (it.model.startsWith('lamp')) this.wireLamp(obj, m.size.y)
+    if (it.model === 'desk' || it.model === 'computerScreen') {
+      obj.traverse((o) => {
+        if ((o as Mesh).isMesh) this.staticFurniture.push(o as Mesh)
+      })
+    }
     this.scene.add(obj)
+  }
+
+  private displayTemplate(withComputer: boolean) {
+    let template = this.displayTemplates.get(withComputer)
+    if (!template) {
+      template = this.studioDisplay(withComputer)
+      this.displayTemplates.set(withComputer, template)
+    }
+    return template
   }
 
   /**
@@ -2165,7 +2235,6 @@ export class OfficeScene {
     const loop = (now: number) => {
       const dt = Math.min(0.25, (now - this.last) / 1000)
       this.last = now
-      this.time += dt
       if (this.assets) {
         this.update(dt)
         if (this.barista) {
@@ -2175,7 +2244,6 @@ export class OfficeScene {
         this.updateScreens(dt)
         this.updateExterior()
         this.updateTv()
-        this.exterior?.animate(this.time)
       }
       this.renderer.render(this.scene, this.camera)
       this.labelRenderer.render(this.scene, this.camera)
@@ -2214,12 +2282,23 @@ export class OfficeScene {
     }
     this.scene.traverse((o) => {
       const mesh = o as Mesh
+      if (mesh instanceof InstancedMesh) mesh.dispose()
       ;(o as SkinnedMesh).skeleton?.dispose()
       if (mesh.geometry) mesh.geometry.dispose()
       const mat = mesh.material as Material | Material[] | undefined
       if (Array.isArray(mat)) mat.forEach(disposeMaterial)
       else if (mat) disposeMaterial(mat)
     })
+    // Template materials can have been replaced by the shared screen materials.
+    for (const template of [this.deskTemplate, ...this.displayTemplates.values()]) {
+      template?.traverse((o) => {
+        const mat = (o as Mesh).material
+        if (Array.isArray(mat)) mat.forEach(disposeMaterial)
+        else if (mat) disposeMaterial(mat)
+      })
+    }
+    this.deskTemplate = null
+    this.displayTemplates.clear()
     for (const t of this.clothesTextures.values()) t.dispose()
     this.clothesTextures.clear()
     for (const d of this.frameDisposables) d.dispose()
@@ -2841,31 +2920,39 @@ export class OfficeScene {
   private stepWalk(ch: Char, dt: number) {
     if (this.waitingForElevator(ch)) return
     if (ch.entering && ch.x > ELEVATOR.frontX + 0.35) ch.entering = false
-    const next = ch.path[0]
-    if (!next) {
-      this.arrive(ch)
-      return
-    }
-    const dx = next.x - ch.x
-    const dz = next.z - ch.z
-    const dist = Math.hypot(dx, dz)
-    const step = WALK_SPEED * dt
-    if (dist > 1e-4) ch.targetYaw = Math.atan2(dx, dz)
-    if (dist <= step) {
+    let remaining = WALK_SPEED * dt
+    // Spend the whole frame's distance, including across grid boundaries.
+    // Discarding the remainder made walking slow down at every waypoint.
+    while (true) {
+      const next = ch.path[0]
+      if (!next) {
+        this.arrive(ch)
+        return
+      }
+      const dx = next.x - ch.x
+      const dz = next.z - ch.z
+      const dist = Math.hypot(dx, dz)
+      if (dist > 1e-4) ch.targetYaw = Math.atan2(dx, dz)
+      if (dist > remaining) {
+        ch.x += (dx / dist) * remaining
+        ch.z += (dz / dist) * remaining
+        return
+      }
       ch.x = next.x
       ch.z = next.z
       ch.path.shift()
-      if (ch.path.length === 0) {
+      remaining -= dist
+      if (!ch.path.length) {
         this.arrive(ch)
         return
       }
       // 칸 경계에서 목적지가 바뀌었는지 확인(배회 중 일이 생기면 자리로 돌아간다)
       const want = this.wantedGoal(ch)
-      if (want !== ch.goal) this.go(ch, want)
-      return
+      if (want !== ch.goal) {
+        this.go(ch, want)
+        return
+      }
     }
-    ch.x += (dx / dist) * step
-    ch.z += (dz / dist) * step
   }
 
   private stepSit(ch: Char, dt: number) {
