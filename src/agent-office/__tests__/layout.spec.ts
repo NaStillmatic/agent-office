@@ -42,6 +42,18 @@ describe('사무실 배치', () => {
     }
   })
 
+  it('축소한 바닥에 업무 책상과 기획 회의 테이블이 여유를 두고 들어간다', () => {
+    for (const desk of LAYOUT.items.filter(item => item.model === 'desk')) {
+      const halfWidth = 0.73 * (desk.sx ?? desk.s ?? 1) / 2
+      const halfDepth = 0.56 * (desk.sz ?? desk.s ?? 1) / 2
+      expect(desk.x - halfWidth).toBeGreaterThan(0.1)
+      expect(desk.x + halfWidth).toBeLessThan(W - 0.1)
+      expect(desk.z - halfDepth).toBeGreaterThan(0.1)
+      expect(desk.z + halfDepth).toBeLessThan(D - 0.1)
+    }
+    expect(ZONE_ORIGIN[0].x + 2.11 + 4.25 / 2 + 0.008).toBeLessThan(W - 0.1)
+  })
+
   it('자리마다 듀얼 디스플레이이 넓힌 책상 안에 들어가고 서로 겹치지 않는다', () => {
     const SCREEN_W = 0.393 // computerScreen 모델 폭(스케일 1)
     const DESK_W = 0.73 // FOOT.desk 폭(스케일 1)
@@ -177,11 +189,11 @@ describe('휴게 공간', () => {
     expect(LAYOUT.sofaSeats).toHaveLength(2)
     const [a, b] = LAYOUT.sofaSeats
     // 앉은 캐릭터는 팔까지 몸 중심에서 ±0.37 라서 두 자리 간격이 0.74 를 넘어야 서로 겹치지 않는다
-    expect(Math.abs(a.z - b.z)).toBeGreaterThan(0.76)
+    expect(Math.abs(a.x - b.x)).toBeGreaterThan(0.76)
     const sofa = LAYOUT.items.find((item) => item.model === 'loungeSofa')!
     for (const s of LAYOUT.sofaSeats) {
-      expect(s.x).toBeGreaterThan(sofa.x - 0.14 + 0.19)
-      expect(s.x).toBeLessThan(sofa.x + 0.27675)
+      expect(s.z).toBeGreaterThan(sofa.z - 0.14 + 0.19)
+      expect(s.z).toBeLessThan(sofa.z + 0.27675)
       expect(LAYOUT.blocked.has(key(cellOf(s.cx), cellOf(s.cz)))).toBe(false)
     }
   })
@@ -194,9 +206,9 @@ describe('휴게 공간', () => {
       const chair = chairs[i]
       expect(seat.yaw).toBeCloseTo(chair.rot ?? 0)
       // 앉은 자리는 의자 중심에서 앞쪽으로 치우치되 방석(앞 가장자리) 안이다
-      const dz = (seat.z - chair.z) * Math.cos(seat.yaw)
-      expect(dz).toBeGreaterThan(0)
-      expect(dz).toBeLessThan((0.41 * 1.35) / 2)
+      const forward = (seat.x - chair.x) * Math.sin(seat.yaw) + (seat.z - chair.z) * Math.cos(seat.yaw)
+      expect(forward).toBeGreaterThan(0)
+      expect(forward).toBeLessThan((0.41 * 1.35) / 2)
       expect(LAYOUT.blocked.has(key(cellOf(seat.cx), cellOf(seat.cz)))).toBe(false)
     })
   })
@@ -265,7 +277,7 @@ describe('창 앞 배치', () => {
     expect(LAYOUT.items.some((item) => ['wall', 'wallDoorway', 'wallWindow', 'kitchenCabinetUpper'].includes(item.model))).toBe(false)
     for (const window of LAYOUT.windows) {
       expect(window.h).toBe(1.29 * WALL_SY)
-      expect(window.w / ((window.mullions ?? 0) + 1)).toBe(3)
+      expect(window.w / ((window.mullions ?? 0) + 1)).toBeLessThanOrEqual(3)
     }
   })
 })

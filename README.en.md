@@ -15,7 +15,7 @@ The main agent types at its desk, delegated subagents work at the desks next to 
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png?v=office-screens-20261027" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
+<img src="docs/screenshot.png?v=office-compact-20261027" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
 
 <p><sub>Shown with synthetic test data: six sessions and six subagents. No real conversations or project information are included.</sub></p>
 
@@ -29,9 +29,9 @@ When you run several Claude Code or Codex sessions, the terminal alone makes it 
 
 ## Features
 
-- **Role workspaces** — The 18×18 office has five areas: planning, backend, frontend, review/commit checks, and main/shared. Each has six seats, for 30 total; up to six sessions are visible.
+- **Role workspaces** — The 15.75×14.25 office has five areas: planning, backend, frontend, review/commit checks, and main/shared. Each has six seats, for 30 total; up to six sessions are visible.
 - Seats face one another in each area. Planning has a rounded meeting table, laptops and a diagram board; design has drawing tablets and pens. Review and commit agents share an open six-computer workspace. The diagram board is decorative.
-- Planning occupies the former API area by the right-hand windows; API/backend moves into the previously empty middle-right area. The former planning area remains open.
+- The lounge sits next to planning; the café is beside the main and frontend workspaces, and the elevator is near the windows.
 - Roles use existing agentType first, then short description metadata. No additional transcript bodies or tool inputs are collected. The current Codex collector supplies no role metadata, so Codex subagents use the shared area. Other unknown roles use the shared area with priority seating for mains. Full role areas use nearby standing spots. Tool changes do not move agents; late role metadata can move an unknown agent once.
 - **Characters that show their state** — They sit and type while working, switch to a reading pose while reading files, bounce a speech bubble while waiting for you, and idle subagents wander around the office.
 - **Tool chips in speech bubbles** — The tool in use (`Bash`, `Read`, `Edit` …) and the description of the delegated task. MCP tools are shortened for readability, e.g. `playwright · take screenshot`.
@@ -88,10 +88,10 @@ Open <http://localhost:5180> in your browser, then use Claude Code or Codex as u
 - **Name tag dots and foot rings** identify sessions; **floor colors** identify roles. Clothing colors vary across agents in both 2D and 3D.
 - The two rear glass walls share an elevated view of the river, bridges and city buildings along both banks. A radius-3 curved glass corner joins the two window walls without a central upright. The broad composition balances river, bridges and city buildings without emphasizing a landmark. Recessed glazing, substantial frames and interior sills define the room edge. Compare straight windows with `?hour=18&window=square`. Day, sunset and night images blend with your clock; sunset also warms the indoor sunlight. Shared projection preserves the image proportions and a continuous horizon across both windows. The texture updates only when images load or the time changes. Use `?hour=18` for sunset or `?hour=22` for night. [Sunset](docs/screenshot-sunset.png) · [Night](docs/screenshot-night.png)
 - Desks combine rounded oak tops, white slab supports and sage desk mats, keeping the existing seating clearance and desktop height.
-- The lounge moves 2.25 units toward the café, with a clear passage to the tea tables. The sofa and armchairs use sage fabric, rounded arms, low backs, separate cushions and wooden feet, preserving seat heights and spacing.
+- The lounge has been moved beside planning and rotated, with the sofa and armchairs facing the coffee table. The sofa and armchairs use sage fabric, rounded arms, low backs, separate cushions and wooden feet, preserving seat heights and spacing.
 - The planning room sits closer to the API area, and work areas are grouped slightly to the right. Visible monitor fronts are filled first; each desktop has a slim silver keyboard, silver monitor stands and one Mac mini-style computer. Planning uses laptops, review has six open workstations, and the café has a wider, shallower bar shifted slightly left, separated tables on a wider café rug, more space between equipment, three kettles and a working barista. Stand lamps and potted plants are omitted.
 - The default characters are **2D sprites** generated from the approved concepts, with directional views, four walking phases and two typing frames, seated and coffee poses. Set `cap: true` in `AGENT_LOOKS` for a cap. `glasses: true` uses the existing 3D character; set `CHARACTER_RENDER_STYLE` to `'3d'` to restore all 3D models. [2D close-up](docs/screenshot-sprite-closeup.png) · [Cap in the office](docs/screenshot-sprite-cap.png)
-- The lounge moves 0.45 units inward from the glazing, leaving more space behind the sofa. The rug, tables, chairs, lights and seated positions move together.
+- The lounge rug, tables, chairs and seating destinations move together.
 - Meeting tables have laptops. Occupied desktop workstations show a light web view on the worker’s left and a terminal on the right. The elevator moves smoothly and arrivals exit one at a time.
 - **Mouse wheel** zooms in and out. The top-right button toggles fullscreen.
 - **Click a character or name tag** to open the detail card. Click empty space or press `Esc` to close it.

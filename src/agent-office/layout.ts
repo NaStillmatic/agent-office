@@ -21,24 +21,24 @@ export const CAFE = {
   counterX: BAR_CENTER_X - (BAR_OUTER_HALF_WIDTH + BAR_INNER_HALF_WIDTH) / 2,
   cupX: BAR_CENTER_X + (BAR_OUTER_HALF_WIDTH + BAR_INNER_HALF_WIDTH) / 2,
   counterDepth: BAR_OUTER_HALF_WIDTH - BAR_INNER_HALF_WIDTH,
-  z: 13.1,
-  startZ: 12.5,
+  z: 9.85,
+  startZ: 9.25,
   outerHalfWidth: BAR_OUTER_HALF_WIDTH,
   innerHalfWidth: BAR_INNER_HALF_WIDTH,
-  frontZ: 16,
+  frontZ: 12.75,
   tableX: 2.85,
-  tableZ: 10.05,
+  tableZ: 6.8,
   baristaX: BAR_CENTER_X,
 }
 export const G = 0.25
-export const W = 18
-export const D = 18
+export const W = 15.75
+export const D = 14.25
 /** 뒤쪽 두 창면을 부드럽게 연결하는 곡면 유리 반지름. */
 export const WINDOW_RADIUS = 3
 export const COLS = Math.round(W / G)
 export const ROWS = Math.round(D / G)
 /** 화면 위쪽의 엘리베이터. 객실 안에서 태어나고 객실 안으로 돌아가 퇴장한다. */
-export const ELEVATOR = { x: 3.375, z: 3.375, frontX: 4.075, lobbyX: 4.625, w: 1.7, d: 1.4, h: 1.6 }
+export const ELEVATOR = { x: 2.875, z: 2.875, frontX: 3.575, lobbyX: 4.125, w: 1.7, d: 1.4, h: 1.6 }
 /** 길찾기에서 사용하는 출입 목적지(엘리베이터 객실 중심). */
 export const DOOR = { x: ELEVATOR.x, z: ELEVATOR.z }
 
@@ -47,12 +47,12 @@ export const ZONE_COUNT = 6
 export const TEAM_COLORS = ['#22b8cf', '#f5d142', '#f06595', '#94d82d', '#9775fa', '#ff922b']
 /** 구역 왼쪽 위(북서) 모서리 */
 export const ZONE_ORIGIN: { x: number; z: number }[] = [
-  { x: 11, z: 3.25 }, // 기획
-  { x: 11, z: 7.25 }, // 백엔드
-  { x: 6, z: 7.25 }, // 디자인
-  { x: 6, z: 2.5 }, // 비어 있는 구역
-  { x: 11, z: 12 }, // 리뷰·배포
-  { x: 6, z: 12 }, // 공용
+  { x: 10.5, z: 2.5 }, // 기획
+  { x: 10.5, z: 6.5 }, // 백엔드
+  { x: 6, z: 6.5 }, // 디자인
+  { x: 6, z: 1.75 }, // 비어 있는 구역
+  { x: 10.5, z: 11.25 }, // 리뷰·배포
+  { x: 6, z: 11.25 }, // 공용
 ]
 export const ZONE_SIZE = { w: 4.4, d: 2.55 }
 const COL_X = [0.65, 2.11, 3.57]
@@ -158,20 +158,19 @@ const LOUNGE_SCALE = 1.35
  */
 const SOFA_SX = 2.0
 const CHAIR_SX = 2.6
-/** 소파 중심 z. 커피바의 티테이블과 약 1칸의 통로를 두고 휴게 공간을 이어 배치한다 */
-const SOFA_Z = 6.75
-/** 소파를 유리에서 띄워 파노라마 창을 가리지 않게 한다 */
-const SOFA_CENTER_X = 1.65
-/** 소파는 창을 등지고 사무실 안쪽(+x)을 본다 */
-const SOFA_YAW = Math.PI / 2
+/** 기획 구역 옆 빈 공간의 휴게 좌석 중심. */
+const SOFA_Z = 2.5
+const SOFA_CENTER_X = 7.5
+/** 시계 방향으로 90도 돌린 휴게 공간은 +z 방향을 본다. */
+const SOFA_YAW = 0
 /** 앉은 사람의 원점이 방석 앞 가장자리에서 얼마나 뒤인가(월드 단위). 엉덩이가 등받이를 뚫지 않고 무릎이 방석 앞으로 나오게 맞춘 값 */
 export const SOFA_SIT_BACK = 0.225
-/** 소파 중심에서 앞 가장자리까지의 x 좌표 */
-const SOFA_FRONT = SOFA_CENTER_X + (LOUNGE_MODEL.d * LOUNGE_SCALE) / 2
-/** 1인용 의자 두 개: 커피 테이블을 마주 본다. 의자 rot 이 곧 앉는 사람의 yaw 다 */
+/** 소파 중심에서 앞 가장자리까지의 z 좌표 */
+const SOFA_FRONT = SOFA_Z + (LOUNGE_MODEL.d * LOUNGE_SCALE) / 2
+/** 1인용 의자 두 개가 커피 테이블을 마주 본다. */
 const CHAIRS = [
-  { x: SOFA_CENTER_X + 1, z: SOFA_Z - 1.4, rot: 0 },
-  { x: SOFA_CENTER_X + 1, z: SOFA_Z + 1.4, rot: Math.PI },
+  { x: SOFA_CENTER_X + 1.4, z: SOFA_Z + 1, rot: -Math.PI / 2 },
+  { x: SOFA_CENTER_X - 1.4, z: SOFA_Z + 1, rot: Math.PI / 2 },
 ]
 
 /** 티테이블 원목 의자(chairRounded, 배율 1.4)의 방석 윗면 높이. 모델 방석 윗면 0.22 를 잰 값 */
@@ -566,7 +565,7 @@ function build(): OfficeLayout {
   put({ model: 'pottedPlant', x: 4.2, z: 0, wall: 'N', s: 1.3 })
 
   // ── 휴게 공간(통유리 앞, 유리에서 떨어뜨려 배치) ──
-  const rug = { x: SOFA_CENTER_X + 0.85, z: SOFA_Z, r: 1.15 }
+  const rug = { x: SOFA_CENTER_X, z: SOFA_Z + 0.85, r: 1.15 }
   put({
     model: 'loungeSofa',
     x: SOFA_CENTER_X,
@@ -578,44 +577,36 @@ function build(): OfficeLayout {
   // 방석 안쪽 폭을 두 칸으로 나눠 각 칸 가운데에 앉는다
   const sofaSeatW = ((SOFA_MODEL_W - 2 * LOUNGE_MODEL.arm) * SOFA_SX) / 2
   const sofaSeats: SofaSeat[] = [-1, 1].map((side, i) => {
-    const z = SOFA_Z + (side * sofaSeatW) / 2
+    const x = SOFA_CENTER_X + (side * sofaSeatW) / 2
     return {
       id: `sofa-${i}`,
-      x: SOFA_FRONT - SOFA_SIT_BACK,
-      z,
+      x,
+      z: SOFA_FRONT - SOFA_SIT_BACK,
       yaw: SOFA_YAW,
-      cx: cellCenter(cellOf(SOFA_FRONT) + 1),
-      cz: cellCenter(cellOf(z)),
+      cx: cellCenter(cellOf(x)),
+      cz: cellCenter(cellOf(SOFA_FRONT) + 1),
       seatTop: LOUNGE_MODEL.seatTop * LOUNGE_SCALE,
     }
   })
-  put({ model: 'tableCoffee', x: SOFA_CENTER_X + 1, z: SOFA_Z, rot: Math.PI / 2, s: 1.15 })
+  put({ model: 'tableCoffee', x: SOFA_CENTER_X, z: SOFA_Z + 1, rot: 0, s: 1.15 })
   const chairHalfD = (LOUNGE_MODEL.d * LOUNGE_SCALE) / 2
   const chairSeats: SofaSeat[] = CHAIRS.map((c, i) => {
     put({ model: 'loungeChair', x: c.x, z: c.z, rot: c.rot, s: LOUNGE_SCALE, sx: CHAIR_SX })
-    // rot 0 은 +z, rot π 는 -z 를 본다. 앞 가장자리에서 SOFA_SIT_BACK 뒤에 앉고, 앞 칸에서 걸어 들어간다
-    const dir = Math.cos(c.rot) > 0 ? 1 : -1
-    const front = c.z + dir * chairHalfD
+    const dir = Math.sin(c.rot) > 0 ? 1 : -1
+    const front = c.x + dir * chairHalfD
     return {
       id: `chair-${i}`,
-      x: c.x,
-      z: front - dir * SOFA_SIT_BACK,
+      x: front - dir * SOFA_SIT_BACK,
+      z: c.z,
       yaw: c.rot,
-      cx: cellCenter(cellOf(c.x)),
-      cz: cellCenter(cellOf(front) + dir),
+      cx: cellCenter(cellOf(front) + dir),
+      cz: cellCenter(cellOf(c.z)),
       seatTop: LOUNGE_MODEL.seatTop * LOUNGE_SCALE,
     }
   })
-  // 소파 양옆 협탁(소파 중심 ±1.3). 모델 깊이(0.22)가 얕아 위 소품이 떨어질 듯 보여 깊이만 1.6배(0.35)로 늘린다.
-  put({ model: 'sideTable', x: SOFA_CENTER_X, z: SOFA_Z + 1.3, rot: Math.PI / 2, s: 1.0, sz: 1.6 })
-  put({ model: 'lampRoundTable', x: SOFA_CENTER_X, z: SOFA_Z + 1.3, y: 0.38 })
-  put({ model: 'sideTable', x: SOFA_CENTER_X, z: SOFA_Z - 1.3, rot: Math.PI / 2, s: 1.0, sz: 1.6 })
   // 소파 방석 두 자리에 사람이 앉으므로 곰 인형·쿠션은 소파 앞 가장자리 칸(x 0.5~0.75)에 둔다. 바닥 소품은 이동 막힘에서 빠지므로 몸체가 소파 출구 열(x 0.75~1.0)로 넘치면 걸어 나오는 캐릭터가 뚫고 지나간다. 곰은 몸체 x 폭이 0.17 이라 중심을 0.66 에, 쿠션은 회전 뒤 x 폭이 0.063 이라 0.71 에 둔다(0.71+0.0315 < 0.75)
-  put({ model: 'bear', x: SOFA_CENTER_X - 0.04, z: SOFA_Z - 0.85, y: 0.02, rot: Math.PI / 2, s: 0.7 })
-  put({ model: 'pillowBlue', x: SOFA_CENTER_X + 0.01, z: SOFA_Z + 0.85, y: 0.02, rot: Math.PI / 2 })
-  put({ model: 'plantSmall3', x: SOFA_CENTER_X + 1, z: SOFA_Z, y: 0.27, s: 1.0 })
-  // 소파와 입구 통로 사이에 스탠드 조명, 창 끝에는 화분을 둔다
-  put({ model: 'lampRoundFloor', x: SOFA_CENTER_X - 0.2, z: SOFA_Z + 2, s: 1.2 })
+  put({ model: 'bear', x: SOFA_CENTER_X + 0.85, z: SOFA_Z - 0.04, y: 0.02, rot: 0, s: 0.7 })
+  put({ model: 'pillowBlue', x: SOFA_CENTER_X - 0.85, z: SOFA_Z + 0.01, y: 0.02, rot: 0 })
   // Stand lamps at pod edges and beside the café leave the main aisles open.
   for (const { x, z } of [
     { x: CAFE.baristaX + 2.1, z: CAFE.startZ - 0.3 },
@@ -635,6 +626,7 @@ function build(): OfficeLayout {
 
   const spots: { x: number; z: number }[][] = []
   for (let z = 0; z < ZONE_COUNT; z++) {
+    if (z === 3) { spots.push([]); continue }
     const o = ZONE_ORIGIN[z]
     spots.push([
       { x: o.x + 0.9, z: o.z - 0.55 },
@@ -648,10 +640,10 @@ function build(): OfficeLayout {
   const coffeePois: Poi[] = [-0.5, 0, 0.5].map((dx) => ({ x: CAFE.baristaX + dx, z: CAFE.frontZ + 0.336, yaw: Math.PI }))
   // 휴게 공간(소파가 다 찼을 때 서 있는 자리)
   const loungePois: Poi[] = [
-    { x: SOFA_CENTER_X + 2.2, z: SOFA_Z, yaw: -Math.PI / 2 },
-    { x: SOFA_CENTER_X + 2.2, z: SOFA_Z - 1.3, yaw: Math.PI / 2 },
-    { x: SOFA_CENTER_X + 2.05, z: SOFA_Z + 1.2, yaw: -Math.PI / 2 },
-    { x: SOFA_CENTER_X + 0.5, z: SOFA_Z + 2.1, yaw: -Math.PI / 2 },
+    { x: SOFA_CENTER_X, z: SOFA_Z + 2.2, yaw: Math.PI },
+    { x: SOFA_CENTER_X + 1.3, z: SOFA_Z + 2.2, yaw: 0 },
+    { x: SOFA_CENTER_X - 1.2, z: SOFA_Z + 2.05, yaw: Math.PI },
+    { x: SOFA_CENTER_X - 2.1, z: SOFA_Z + 0.5, yaw: Math.PI },
   ]
   const pois: Poi[] = [
     // 창 앞 공용 통로
@@ -665,9 +657,9 @@ function build(): OfficeLayout {
     { x: CAFE.baristaX + 2.15, z: CAFE.z - 1.5, yaw: -Math.PI / 2 },
     ...loungePois,
     // 통로
-    { x: 10.1, z: 6.4, yaw: 0 },
-    { x: 4.1, z: 8.4, yaw: 0 },
-    { x: W - 0.6, z: 4.4, yaw: -Math.PI / 2 },
+    { x: 10.1, z: 5.65, yaw: 0 },
+    { x: 4.1, z: 7.65, yaw: 0 },
+    { x: W - 0.6, z: 5.25, yaw: -Math.PI / 2 },
   ]
 
   const shelfBooks = buildShelfBooks(items)

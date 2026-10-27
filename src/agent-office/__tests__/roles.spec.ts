@@ -22,11 +22,11 @@ describe('role workspaces', () => {
   })
   it('moves and enlarges the café while keeping operations at the front center', () => {
     expect(CAFE.baristaX).toBe(2.9)
-    expect(CAFE.z).toBe(13.1)
+    expect(CAFE.z).toBe(9.85)
     expect(CAFE.baristaX - CAFE.outerHalfWidth).toBeGreaterThan(1.6)
     expect(CAFE.outerHalfWidth * 2).toBeLessThan(2.5)
     expect(CAFE.frontZ - CAFE.startZ).toBeGreaterThan(3.4)
-    expect(ZONE_ORIGIN[4]).toEqual({ x: 11, z: 12 })
+    expect(ZONE_ORIGIN[4]).toEqual({ x: 10.5, z: 11.25 })
   })
   it('faces paired workstations toward one another in every area', () => {
     for (let zone = 0; zone < 6; zone++) {

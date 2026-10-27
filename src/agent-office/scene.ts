@@ -965,7 +965,7 @@ export class OfficeScene {
 
     // Compact, softly rounded islands distinguish work pods and shared spaces.
     this.floorPatch(4.3, 7.5, 0.45, '#dfccb0', CAFE.baristaX, CAFE.z - 0.5)
-    this.floorPatch(3.15, 3.65, 0.45, '#cbd9d2', 2.15, LAYOUT.rug.z)
+    this.floorPatch(3.65, 3.15, 0.45, '#cbd9d2', LAYOUT.rug.x, LAYOUT.rug.z - 0.35)
     for (let z = 0; z < ZONE_COUNT; z++) {
       const o = ZONE_ORIGIN[z]
       const mat = this.floorPatch(ZONE_SIZE.w, ZONE_SIZE.d, 0.34, TEAM_FLOORS[z], o.x + 2.1, o.z + 0.75)

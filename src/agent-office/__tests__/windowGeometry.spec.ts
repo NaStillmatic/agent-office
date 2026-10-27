@@ -3,9 +3,9 @@ import { curvedTrimGeometry, curvedWindowGeometry, windowArc } from '../windowGe
 import { WINDOW_RADIUS, W, D, LAYOUT, cellOf, key } from '../layout'
 
 describe('완만한 코너 창문', () => {
-  it('정사각형의 두 직선 창면과 곡면 끝이 연결된다', () => {
-    expect(W).toBe(18)
-    expect(D).toBe(18)
+  it('두 직선 창면과 곡면 끝이 연결된다', () => {
+    expect(W).toBe(15.75)
+    expect(D).toBe(14.25)
     const points = windowArc(WINDOW_RADIUS)
     expect(points[0].x).toBeCloseTo(0)
     expect(points[0].z).toBeCloseTo(WINDOW_RADIUS)
@@ -14,7 +14,7 @@ describe('완만한 코너 창문', () => {
     for (const window of LAYOUT.windows) {
       const center = window.wall === 'N' ? window.x! : window.z!
       expect(center - window.w / 2).toBeCloseTo(WINDOW_RADIUS)
-      expect(center + window.w / 2).toBeCloseTo(18)
+      expect(center + window.w / 2).toBeCloseTo(window.wall === 'N' ? W : D)
     }
     for (const p of points) expect(Math.hypot(p.x - WINDOW_RADIUS, p.z - WINDOW_RADIUS)).toBeCloseTo(WINDOW_RADIUS)
   })
