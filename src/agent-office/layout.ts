@@ -487,7 +487,8 @@ function build(): OfficeLayout {
           rot: (p.yaw === 0 ? Math.PI : 0) - side * 0.10,
           s: p.lead ? 1.35 : 1.15,
           screenOf: id,
-          screenKind: z === 2 || (z === 4 && side < 0) ? 'design' : 'terminal',
+          // The seated worker sees the webpage on the left and code on the right.
+          screenKind: side * Math.cos(p.yaw) > 0 ? 'design' : 'terminal',
         })
       }
       if (z !== 0) put({ model: 'computerKeyboard', x: p.dx, z: p.dz - Math.cos(p.yaw) * 0.1 * s, y: top, s, rot: p.yaw })

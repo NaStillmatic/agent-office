@@ -53,7 +53,7 @@ describe('사무실 배치', () => {
       }
       expect(screens).toHaveLength(2)
       const [left, right] = [...screens].sort((a, b) => a.x - b.x)
-      expect([left.screenKind, right.screenKind]).toEqual(seat.zone === 2 || seat.zone === 3 ? ['design', 'design'] : seat.zone === 4 ? ['design', 'terminal'] : ['terminal', 'terminal'])
+      expect([left.screenKind, right.screenKind]).toEqual(seat.yaw === 0 ? ['terminal', 'design'] : ['design', 'terminal'])
       // 의자 바로 뒤(-z)의 책상. 같은 열의 다른 줄·구역 책상과 헷갈리지 않게 가장 가까운 것을 고른다
       const desk = LAYOUT.items
         .filter((i) => i.model === 'desk' && i.zone === seat.zone && Math.abs(i.x - seat.cx) < 0.01)

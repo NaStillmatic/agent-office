@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { classifyRole, pickRoleSeat, roleZone, sharedSeatForSlot, sharedSlotForSeat } from '../roles'
+import { classifyRole, pickRoleSeat, roleLabel, roleZone, sharedSeatForSlot, sharedSlotForSeat } from '../roles'
 import { CAFE, LAYOUT, ZONE_ORIGIN, type Seat } from '../layout'
 import { OfficeScene } from '../scene'
 
 describe('role workspaces', () => {
+  it('uses concise planning, backend and frontend labels in each language', () => {
+    expect([0, 1, 2].map(zone => roleLabel(zone, 'ko'))).toEqual(['기획', '백엔드', '프론트엔드'])
+    expect([0, 1, 2].map(zone => roleLabel(zone, 'en'))).toEqual(['Planning', 'Backend', 'Frontend'])
+    expect([0, 1, 2].map(zone => roleLabel(zone, 'ja'))).toEqual(['企画', 'バックエンド', 'フロントエンド'])
+    expect([0, 1, 2].map(zone => roleLabel(zone, 'zh'))).toEqual(['规划', '后端', '前端'])
+  })
   it.each([
     ['Plan', '', 'planning'], ['feature:architect', '', 'planning'],
     ['worker', 'API 응답 처리', 'backend'], ['frontend-developer', '', 'frontend'],

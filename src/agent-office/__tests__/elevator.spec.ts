@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FloorElevator } from '../elevator'
+import { arrivalCanAppear, FloorElevator } from '../elevator'
 import { DOOR, ELEVATOR, LAYOUT, cellOf, findPath, key } from '../layout'
 
 describe('엘리베이터 출입', () => {
@@ -37,6 +37,31 @@ describe('엘리베이터 출입', () => {
     expect(lift.state).toBe('rising')
     lift.update(10, true)
     expect(lift.height).toBe(0)
+  })
+
+  it('출발과 도착에서 속도를 부드럽게 줄이며 왕복한다', () => {
+    const lift = new FloorElevator()
+    const positions = [lift.height]
+    for (let i = 0; i < 14; i++) {
+      lift.update(0.1, true)
+      positions.push(lift.height)
+    }
+    expect(lift.ready).toBe(true)
+    expect(positions[1] - positions[0]).toBeLessThan(positions[7] - positions[6])
+    expect(positions[14] - positions[13]).toBeLessThan(positions[7] - positions[6])
+    lift.update(0, false, true)
+    for (let i = 0; i < 14; i++) lift.update(0.1, false)
+    expect(lift.state).toBe('hidden')
+    expect(lift.height).toBe(lift.bottom)
+  })
+
+  it('먼저 도착한 사람이 객실을 벗어나야 다음 사람이 나타난다', () => {
+    const cabin = { x: 3, z: 3 }
+    const arrival = { x: 3, z: 3, entering: true, visible: true, removed: false }
+    expect(arrivalCanAppear(cabin, [arrival])).toBe(false)
+    expect(arrivalCanAppear(cabin, [{ ...arrival, visible: false }])).toBe(true)
+    expect(arrivalCanAppear(cabin, [{ ...arrival, x: 4 }])).toBe(true)
+    expect(arrivalCanAppear(cabin, [{ ...arrival, removed: true }])).toBe(true)
   })
 
   it('화면 위쪽 중앙의 엘리베이터에서 객실·로비를 거쳐 모든 자리까지 오갈 수 있고 객실 뒤·옆은 막혀 있다', () => {

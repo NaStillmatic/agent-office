@@ -3,10 +3,10 @@ import type { Locale } from '../i18n'
 export type OfficeRole = 'planning' | 'backend' | 'frontend' | 'review' | 'ops' | 'general'
 export const ROLE_ORDER: OfficeRole[] = ['planning', 'backend', 'frontend', 'review', 'ops', 'general']
 const names: Record<Locale, string[]> = {
-  ko: ['기획 회의실', 'API · 백엔드', '디자인 스튜디오', '리뷰 · 검수', '리뷰 · 커밋 검수', '메인 · 공용'],
-  en: ['Planning room', 'API · Backend', 'Design studio', 'Review · QA', 'Review · Release', 'Main · Shared'],
-  ja: ['企画会議室', 'API・バックエンド', 'デザインスタジオ', 'レビュー・検証', 'レビュー・コミット検証', 'メイン・共用'],
-  zh: ['规划会议室', 'API · 后端', '设计工作室', '审查 · 验证', '审查 · 提交验证', '主代理 · 公共区'],
+  ko: ['기획', '백엔드', '프론트엔드', '리뷰 · 검수', '리뷰 · 커밋 검수', '메인 · 공용'],
+  en: ['Planning', 'Backend', 'Frontend', 'Review · QA', 'Review · Release', 'Main · Shared'],
+  ja: ['企画', 'バックエンド', 'フロントエンド', 'レビュー・検証', 'レビュー・コミット検証', 'メイン・共用'],
+  zh: ['规划', '后端', '前端', '审查 · 验证', '审查 · 提交验证', '主代理 · 公共区'],
 }
 export const roleLabel = (zone: number, locale: Locale) => names[locale][zone]
 

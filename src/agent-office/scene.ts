@@ -94,7 +94,7 @@ import { classifyRole, roleZone, roleLabel, pickRoleSeat, sharedSeatForSlot, sha
 import { addRoleFurniture } from './roleFurniture'
 import { nightness } from './windowView'
 import { createSeoulBackdrop, panoramaWeights } from './exterior'
-import { FloorElevator } from './elevator'
+import { arrivalCanAppear, FloorElevator } from './elevator'
 import { curvedTrimGeometry, curvedWindowGeometry } from './windowGeometry'
 import { instanceStaticMeshes } from './staticMeshes'
 
@@ -783,7 +783,7 @@ export class OfficeScene {
   private assets: OfficeAssets | null = null
   private chars = new Map<string, Char>()
   private elevator: { motion: FloorElevator; pod: Group; signal: MeshStandardMaterial } | null = null
-  private barista: { mixer: AnimationMixer; label: HTMLElement; spritePerson: SpritePerson | null; elapsed: number } | null = null
+  private barista: { mixer: AnimationMixer; spritePerson: SpritePerson | null; elapsed: number } | null = null
   private zones: (string | null)[] = new Array(ZONE_COUNT).fill(null)
   private zoneMats: MeshBasicMaterial[] = []
   private zoneLabels: { el: HTMLElement; obj: CSS2DObject }[] = []
@@ -1173,7 +1173,7 @@ export class OfficeScene {
       if (ch.ridingDown) { passengers = true; continue }
       if (ch.entering && !ch.leaving && ch.delay <= 0.5) {
         requested = true
-        if (ch.delay <= 0 && Math.hypot(ch.x - DOOR.x, ch.z - DOOR.z) < 1) arrivalsInside = true
+        if (ch.delay <= 0 && ch.holder.visible && Math.hypot(ch.x - DOOR.x, ch.z - DOOR.z) < 1) arrivalsInside = true
       }
       if (ch.leaving && Math.hypot(ch.x - DOOR.x, ch.z - DOOR.z) < 1.8) requested = true
     }
@@ -1218,14 +1218,7 @@ export class OfficeScene {
       mixer.clipAction(barista3d!.clips.coffee).play()
     }
     this.scene.add(model)
-    const label = document.createElement('div')
-    label.className = 'ao-zone'
-    label.style.setProperty('--team', '#768b69')
-    label.textContent = t().barista
-    const marker = new CSS2DObject(label)
-    marker.position.set(LAYOUT.barista.x, CHAR_HEIGHT + 0.32, LAYOUT.barista.z)
-    this.scene.add(marker)
-    this.barista = { mixer, label, spritePerson, elapsed: 0 }
+    this.barista = { mixer, spritePerson, elapsed: 0 }
   }
 
   private placeCafeDetails() {
@@ -2217,7 +2210,6 @@ export class OfficeScene {
           this.barista.mixer.update(dt)
           this.barista.elapsed += dt
           this.barista.spritePerson?.update(0, 'work', this.barista.elapsed, null, 0)
-          this.barista.label.textContent = t().barista
         }
         this.updateScreens(dt)
         this.updateExterior()
@@ -2448,7 +2440,10 @@ export class OfficeScene {
     })
     const holder = new Group()
     holder.add(model)
-    if (spritePerson) holder.add(spritePerson.sprite)
+    if (spritePerson) {
+      spritePerson.sprite.material.clippingPlanes = [FLOOR_CLIP]
+      holder.add(spritePerson.sprite)
+    }
     this.scene.add(holder)
 
     // 팀 색 발밑 링
@@ -2824,6 +2819,8 @@ export class OfficeScene {
         ch.holder.visible = ch.ring.visible = false
         continue
       }
+      if (ch.entering && !ch.holder.visible && !arrivalCanAppear(DOOR,
+        [...this.chars.values()].map(other => ({ x: other.x, z: other.z, entering: other.entering, visible: other.holder.visible, removed: other.removed })))) continue
       if (!ch.holder.visible) {
         ch.holder.visible = true
         ch.ring.visible = true

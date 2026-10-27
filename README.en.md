@@ -15,7 +15,7 @@ The main agent types at its desk, delegated subagents work at the desks next to 
 ![Platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 
-<img src="docs/screenshot.png?v=f7b0992" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
+<img src="docs/screenshot.png?v=office-screens-20261027" alt="Agent Office test scene: six sessions and six subagents in an office overlooking Seoul" width="900">
 
 <p><sub>Shown with synthetic test data: six sessions and six subagents. No real conversations or project information are included.</sub></p>
 
@@ -29,7 +29,7 @@ When you run several Claude Code or Codex sessions, the terminal alone makes it 
 
 ## Features
 
-- **Role workspaces** — The 18×18 office has five areas: planning, API/backend, design, review/commit checks, and main/shared. Each has six seats, for 30 total; up to six sessions are visible.
+- **Role workspaces** — The 18×18 office has five areas: planning, backend, frontend, review/commit checks, and main/shared. Each has six seats, for 30 total; up to six sessions are visible.
 - Seats face one another in each area. Planning has a rounded meeting table, laptops and a diagram board; design has drawing tablets and pens. Review and commit agents share an open six-computer workspace. The diagram board is decorative.
 - Planning occupies the former API area by the right-hand windows; API/backend moves into the previously empty middle-right area. The former planning area remains open.
 - Roles use existing agentType first, then short description metadata. No additional transcript bodies or tool inputs are collected. The current Codex collector supplies no role metadata, so Codex subagents use the shared area. Other unknown roles use the shared area with priority seating for mains. Full role areas use nearby standing spots. Tool changes do not move agents; late role metadata can move an unknown agent once.
@@ -92,7 +92,7 @@ Open <http://localhost:5180> in your browser, then use Claude Code or Codex as u
 - The planning room sits closer to the API area, and work areas are grouped slightly to the right. Visible monitor fronts are filled first; each desktop has a slim silver keyboard, silver monitor stands and one Mac mini-style computer. Planning uses laptops, review has six open workstations, and the café has a wider, shallower bar shifted slightly left, separated tables on a wider café rug, more space between equipment, three kettles and a working barista. Stand lamps and potted plants are omitted.
 - The default characters are **2D sprites** generated from the approved concepts, with directional views, four walking phases and two typing frames, seated and coffee poses. Set `cap: true` in `AGENT_LOOKS` for a cap. `glasses: true` uses the existing 3D character; set `CHARACTER_RENDER_STYLE` to `'3d'` to restore all 3D models. [2D close-up](docs/screenshot-sprite-closeup.png) · [Cap in the office](docs/screenshot-sprite-cap.png)
 - The lounge moves 0.45 units inward from the glazing, leaving more space behind the sofa. The rug, tables, chairs, lights and seated positions move together.
-- Meeting tables have MacBook-style laptops. Design/review desks show design screens; backend/server/shared desks show terminals.
+- Meeting tables have laptops. Occupied desktop workstations show a light web view on the worker’s left and a terminal on the right. The elevator moves smoothly and arrivals exit one at a time.
 - **Mouse wheel** zooms in and out. The top-right button toggles fullscreen.
 - **Click a character or name tag** to open the detail card. Click empty space or press `Esc` to close it.
 - The **language selector** at the top right changes the UI language. It starts with your browser language (English if unsupported) and is remembered in the browser.
